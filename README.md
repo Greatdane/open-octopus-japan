@@ -2,12 +2,7 @@
 
 # 🐙 open-octopus
 
-### The Octopus Energy API, done right.
-
-<br />
-
-**Smart meters. Live power. Intelligent charging.**
-**All the features Octopus buried in GraphQL.**
+### An Octopus Energy API client built for AI.
 
 <br />
 
@@ -20,8 +15,6 @@
 ```bash
 pip install open-octopus
 ```
-
-**Async. Typed. Batteries included.**
 
 <br />
 
