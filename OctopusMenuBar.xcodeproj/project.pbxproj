@@ -186,6 +186,9 @@
 			minimizedProjectReferenceProxies = 1;
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 8BC2655D2DEDD3F400F279A4 /* Products */;
+			packageReferences = (
+				8B90D1502DEDD44A00FBD190 /* XCLocalSwiftPackageReference "OctopusMenuBarPackage" */,
+			);
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -322,10 +325,18 @@
 		};
 /* End XCConfigurationList section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		8B90D1502DEDD44A00FBD190 /* XCLocalSwiftPackageReference "OctopusMenuBarPackage" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = OctopusMenuBarPackage;
+		};
+/* End XCLocalSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		8B90D1472DEDD44A00FBD189 /* OctopusMenuBarFeature */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = OctopusMenuBarFeature;
+			package = 8B90D1502DEDD44A00FBD190 /* XCLocalSwiftPackageReference "OctopusMenuBarPackage" */;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

@@ -2,6 +2,19 @@ import SwiftUI
 
 // MARK: - Data Models
 
+public struct ChargeSession: Codable, Sendable {
+    var start: String
+    var end: String
+    var kwh: Double
+    var durationMins: Int
+    var cost: Double
+
+    enum CodingKeys: String, CodingKey {
+        case start, end, kwh, cost
+        case durationMins = "duration_mins"
+    }
+}
+
 public struct OctopusData: Codable, Sendable {
     var timestamp: String?
     var livePowerWatts: Int?
@@ -35,6 +48,11 @@ public struct OctopusData: Codable, Sendable {
     var monthlyProjection: Double
     var peakRate: Double?
     var offPeakRate: Double?
+    var chargerProvider: String?  // e.g., "HYPERVOLT", "OHME", "TESLA"
+    var chargeHistory: [ChargeSession]
+    var halfHourlyUsage: [Double]  // 48 slots for last 24h
+    var dataDateLatest: String?   // Actual date of "today" data
+    var dataDatePrevious: String? // Actual date of "yesterday" data
 
     enum CodingKeys: String, CodingKey {
         case timestamp, rate, balance, error, response
@@ -64,6 +82,11 @@ public struct OctopusData: Codable, Sendable {
         case monthlyProjection = "monthly_projection"
         case peakRate = "peak_rate"
         case offPeakRate = "off_peak_rate"
+        case chargerProvider = "charger_provider"
+        case chargeHistory = "charge_history"
+        case halfHourlyUsage = "half_hourly_usage"
+        case dataDateLatest = "data_date_latest"
+        case dataDatePrevious = "data_date_previous"
     }
 
     init() {
@@ -83,6 +106,37 @@ public struct OctopusData: Codable, Sendable {
         savingSessionActive = false
         offPeakPercentage = 0
         monthlyProjection = 0
+        chargeHistory = []
+        halfHourlyUsage = []
+    }
+}
+
+// MARK: - Settings
+
+public enum UsageDisplayMode: String, CaseIterable, Identifiable {
+    case hourly = "Hourly"           // 24 hourly bars
+    case halfHourly = "Half-hourly"  // 48 half-hourly bars
+
+    public var id: String { rawValue }
+}
+
+public enum MenuBarDisplayMode: String, CaseIterable, Identifiable {
+    case auto = "Auto"           // Power > Rate > Icon
+    case power = "Power"         // Always show power (or icon if unavailable)
+    case rate = "Rate"           // Always show rate (or icon if unavailable)
+    case iconOnly = "Icon Only"  // Just the ⚡ icon
+    case octopus = "Octopus"     // 🐙 emoji
+
+    public var id: String { rawValue }
+
+    public var description: String {
+        switch self {
+        case .auto: return "Power → Rate → Icon"
+        case .power: return "Live power usage"
+        case .rate: return "Current rate"
+        case .iconOnly: return "Minimal ⚡"
+        case .octopus: return "🐙"
+        }
     }
 }
 
@@ -96,23 +150,50 @@ public class AppState: ObservableObject {
     @Published public var aiQuery = ""
     @Published public var aiResponse: String?
     @Published public var isAskingAI = false
+    @AppStorage("menuBarDisplayMode") public var displayMode: MenuBarDisplayMode = .auto
+    @AppStorage("usageDisplayMode") public var usageMode: UsageDisplayMode = .halfHourly
 
     private var pythonBridge: PythonBridge?
     private var refreshTimer: Timer?
 
     public var menuBarTitle: String {
         // Show charging icon when car is dispatching
-        let prefix = data.dispatchStatus == "charging" ? "🔌 " : ""
+        let isCharging = data.dispatchStatus == "charging"
 
-        // Priority: live power > rate > fallback icon
-        if let watts = data.livePowerWatts {
-            let power = watts >= 1000 ? String(format: "%.1fkW", Double(watts)/1000) : "\(watts)W"
-            return prefix + power
+        switch displayMode {
+        case .iconOnly:
+            return isCharging ? "🔌" : "⚡"
+
+        case .octopus:
+            return isCharging ? "🔌" : "🐙"
+
+        case .power:
+            let prefix = isCharging ? "🔌 " : ""
+            if let watts = data.livePowerWatts {
+                let power = watts >= 1000 ? String(format: "%.1fkW", Double(watts)/1000) : "\(watts)W"
+                return prefix + power
+            }
+            return isCharging ? "🔌" : "⚡"
+
+        case .rate:
+            let prefix = isCharging ? "🔌 " : ""
+            if let rate = data.rate {
+                return prefix + String(format: "%.0fp", rate)
+            }
+            return isCharging ? "🔌" : "⚡"
+
+        case .auto:
+            let prefix = isCharging ? "🔌 " : ""
+            // Priority: live power > rate > fallback icon
+            if let watts = data.livePowerWatts {
+                let power = watts >= 1000 ? String(format: "%.1fkW", Double(watts)/1000) : "\(watts)W"
+                return prefix + power
+            }
+            if let rate = data.rate {
+                return prefix + String(format: "%.0fp", rate)
+            }
+            return isCharging ? "🔌" : "⚡"
         }
-        if let rate = data.rate {
-            return prefix + String(format: "%.0fp", rate)
-        }
-        return prefix.isEmpty ? "⚡" : "🔌"
     }
 
     public init() {
@@ -305,6 +386,59 @@ struct QuickButton: View {
     }
 }
 
+struct SparklineBar: View {
+    let value: Double
+    let maxVal: Double
+    let isOffPeak: Bool
+    let timeLabel: String
+    @State private var isHovered = false
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 1)
+            .fill(isOffPeak ? Color.cyan.opacity(0.6) : Color.secondary.opacity(0.4))
+            .frame(height: maxVal > 0 ? CGFloat(value / maxVal) * 28 + 2 : 2)
+            .onHover { hovering in
+                isHovered = hovering
+            }
+            .popover(isPresented: $isHovered, arrowEdge: .bottom) {
+                if value > 0.01 {
+                    VStack(spacing: 2) {
+                        Text(String(format: "%.2f kWh", value))
+                            .font(.system(size: 10, weight: .medium))
+                        Text(timeLabel)
+                            .font(.system(size: 9))
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(6)
+                }
+            }
+    }
+}
+
+struct CurvedSeparator: View {
+    var body: some View {
+        Canvas { context, size in
+            var path = Path()
+            // Curve that makes content above appear to float
+            // Start at top-left, curve down at left edge
+            path.move(to: CGPoint(x: 0, y: 0))
+            path.addQuadCurve(
+                to: CGPoint(x: size.width * 0.15, y: size.height - 2),
+                control: CGPoint(x: 0, y: size.height - 2)
+            )
+            // Flat bottom section
+            path.addLine(to: CGPoint(x: size.width * 0.85, y: size.height - 2))
+            // Curve down at right edge
+            path.addQuadCurve(
+                to: CGPoint(x: size.width, y: 0),
+                control: CGPoint(x: size.width, y: size.height - 2)
+            )
+            context.stroke(path, with: .color(.secondary.opacity(0.15)), lineWidth: 1)
+        }
+        .frame(height: 5)
+    }
+}
+
 // MARK: - Menu Bar View
 
 public struct MenuBarView: View {
@@ -322,24 +456,25 @@ public struct MenuBarView: View {
                 heroSection
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(spacing: 8) {
-                        rateCard
+                        usageCard
                         if state.data.dispatchStatus != "none" {
                             chargingCard
                         }
                         if state.data.savingSessionActive || state.data.hasSavingSession {
                             savingSessionCard
                         }
-                        usageCard
+                        rateCard
                         insightsCard
                         aiCard
                     }
                     .padding(.vertical, 8)
                 }
-                Divider()
+                // Curved separator for floating effect
+                CurvedSeparator()
                 footer
             }
         }
-        .frame(width: 300, height: 650)
+        .frame(width: 320, height: 750)
         .background(Color(NSColor.windowBackgroundColor))
     }
 
@@ -477,6 +612,7 @@ public struct MenuBarView: View {
     private var chargingCard: some View {
         let isCharging = state.data.dispatchStatus == "charging"
         let goldColor = Color(red: 1.0, green: 0.84, blue: 0.0)
+        let providerName = state.data.chargerProvider ?? "EV"
 
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 4) {
@@ -485,6 +621,11 @@ public struct MenuBarView: View {
                 Text("SMART CHARGING")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundColor(isCharging ? goldColor : .secondary)
+                if let provider = state.data.chargerProvider {
+                    Text("· \(provider)")
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                }
             }
 
             VStack(alignment: .leading, spacing: 6) {
@@ -494,7 +635,7 @@ public struct MenuBarView: View {
                             Circle()
                                 .fill(goldColor)
                                 .frame(width: 6, height: 6)
-                            Text("Charging")
+                            Text("Charging \(providerName)")
                                 .font(.system(size: 11, weight: .medium))
                                 .foregroundColor(goldColor)
                         }
@@ -522,6 +663,33 @@ public struct MenuBarView: View {
                         Spacer()
                         Text("\(formatTime(start)) → \(formatTime(state.data.nextDispatchEnd))")
                             .font(.system(size: 11, design: .monospaced))
+                    }
+                }
+
+                // Charge history
+                if !state.data.chargeHistory.isEmpty {
+                    Divider()
+                        .padding(.vertical, 2)
+
+                    Text("Recent Sessions")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundColor(.secondary)
+
+                    ForEach(state.data.chargeHistory.prefix(3), id: \.start) { session in
+                        HStack {
+                            Text(formatSessionDate(session.start))
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Text(String(format: "%.1f kWh", session.kwh))
+                                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            Text(String(format: "£%.2f", session.cost))
+                                .font(.system(size: 9))
+                                .foregroundColor(.green)
+                            Text(formatDuration(session.durationMins))
+                                .font(.system(size: 9))
+                                .foregroundColor(.secondary)
+                        }
                     }
                 }
             }
@@ -563,9 +731,9 @@ public struct MenuBarView: View {
     private var usageCard: some View {
         CardView(icon: "chart.line.uptrend.xyaxis", title: "USAGE") {
             VStack(alignment: .leading, spacing: 8) {
-                // Today
+                // Latest day (may not be "today" due to smart meter delay)
                 HStack {
-                    Text("Today")
+                    Text(formatDataDateLabel(state.data.dataDateLatest, fallback: "Latest"))
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
                     Spacer()
@@ -584,9 +752,9 @@ public struct MenuBarView: View {
                     }
                 }
 
-                // Yesterday
+                // Previous day
                 HStack {
-                    Text("Yesterday")
+                    Text(formatDataDateLabel(state.data.dataDatePrevious, fallback: "Previous"))
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
                     Spacer()
@@ -598,13 +766,13 @@ public struct MenuBarView: View {
                 }
 
                 // Sparkline with labels
-                if !state.data.hourlyUsage.isEmpty {
+                if !state.data.hourlyUsage.isEmpty || !state.data.halfHourlyUsage.isEmpty {
                     VStack(spacing: 2) {
                         sparkline
                         HStack {
-                            Text("0h")
+                            Text("-24h")
                             Spacer()
-                            Text("12h")
+                            Text("-12h")
                             Spacer()
                             Text("Now")
                         }
@@ -618,78 +786,71 @@ public struct MenuBarView: View {
     }
 
     private var sparkline: some View {
-        let values = state.data.hourlyUsage
-        let max = values.max() ?? 1
-        let currentHour = Calendar.current.component(.hour, from: Date())
+        // Use half-hourly or hourly based on setting
+        let useHalfHourly = state.usageMode == .halfHourly && !state.data.halfHourlyUsage.isEmpty
+        let values = useHalfHourly ? state.data.halfHourlyUsage : state.data.hourlyUsage
+        let maxVal = values.max() ?? 1
 
-        return HStack(alignment: .bottom, spacing: 1) {
+        return HStack(alignment: .bottom, spacing: useHalfHourly ? 0.5 : 1) {
             ForEach(Array(values.enumerated()), id: \.offset) { index, value in
-                let hourIndex = (currentHour - values.count + index + 25) % 24
-                let isOffPeakHour = hourIndex < 6 || hourIndex == 23
-
-                RoundedRectangle(cornerRadius: 1)
-                    .fill(isOffPeakHour ? Color.cyan.opacity(0.6) : Color.secondary.opacity(0.4))
-                    .frame(height: max > 0 ? CGFloat(value / max) * 28 + 2 : 2)
+                SparklineBar(
+                    value: value,
+                    maxVal: maxVal,
+                    isOffPeak: isOffPeakForIndex(index, count: values.count, useHalfHourly: useHalfHourly),
+                    timeLabel: timeLabelForIndex(index, count: values.count, useHalfHourly: useHalfHourly)
+                )
             }
         }
         .frame(height: 32)
     }
 
+    private func timeLabelForIndex(_ index: Int, count: Int, useHalfHourly: Bool) -> String {
+        // Calculate the time for this bar
+        // Data spans last 24-48h, index 0 is oldest
+        let slotFromEnd = count - index - 1  // How many slots ago
+
+        if useHalfHourly {
+            let hoursAgo = slotFromEnd / 2
+            let minute = (slotFromEnd % 2) * 30
+            let hour = (24 - hoursAgo) % 24
+            return String(format: "%02d:%02d", hour, 30 - minute)
+        } else {
+            let hour = (24 - slotFromEnd) % 24
+            return String(format: "%02d:00", hour)
+        }
+    }
+
+    private func isOffPeakForIndex(_ index: Int, count: Int, useHalfHourly: Bool) -> Bool {
+        // Calculate actual hour for this slot
+        let slotsPerDay = useHalfHourly ? 48 : 24
+        let slotInDay = index % slotsPerDay
+
+        if useHalfHourly {
+            // Off-peak: 23:30 (slot 47) to 05:30 (slots 0-11)
+            return slotInDay >= 47 || slotInDay <= 11
+        } else {
+            // Off-peak: hours 0-5 and 23
+            return slotInDay < 6 || slotInDay == 23
+        }
+    }
+
     // MARK: - Insights Card
 
     private var insightsCard: some View {
-        CardView(icon: "lightbulb.fill", title: "INSIGHTS") {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("INSIGHTS", systemImage: "lightbulb.fill")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(.secondary)
+
             VStack(alignment: .leading, spacing: 6) {
-                // Rate comparison
-                if let peak = state.data.peakRate, let offPeak = state.data.offPeakRate {
-                    HStack(spacing: 4) {
-                        Image(systemName: "bolt.fill")
-                            .font(.system(size: 10))
-                            .foregroundColor(.orange)
-                        Text("Peak \(String(format: "%.1fp", peak))")
-                            .font(.system(size: 11))
-                        Text("→")
-                            .foregroundColor(.secondary)
-                        Text("Off-peak \(String(format: "%.1fp", offPeak))")
-                            .font(.system(size: 11))
-                            .foregroundColor(.cyan)
-                        Text("(\(Int((1 - offPeak/peak) * 100))% cheaper)")
-                            .font(.system(size: 10))
-                            .foregroundColor(.green)
-                    }
-                }
-
-                // Off-peak window
-                if let start = state.data.offPeakStart, let end = state.data.offPeakEnd {
-                    HStack(spacing: 4) {
-                        Image(systemName: "moon.fill")
-                            .font(.system(size: 10))
-                            .foregroundColor(.cyan)
-                        Text("Off-peak: \(start) → \(end)")
-                            .font(.system(size: 11))
-                    }
-                }
-
                 // Off-peak percentage
                 if state.data.offPeakPercentage > 0 {
                     HStack(spacing: 4) {
                         Image(systemName: "checkmark.circle.fill")
                             .font(.system(size: 10))
                             .foregroundColor(.green)
-                        Text("\(Int(state.data.offPeakPercentage))% of today at off-peak rates")
+                        Text("\(Int(state.data.offPeakPercentage))% of usage at off-peak rates")
                             .font(.system(size: 11))
-                    }
-                }
-
-                // Daily standing charge
-                if state.data.standingCharge > 0 {
-                    HStack(spacing: 4) {
-                        Image(systemName: "house.fill")
-                            .font(.system(size: 10))
-                            .foregroundColor(.secondary)
-                        Text(String(format: "Standing charge: %.1fp/day", state.data.standingCharge))
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary)
                     }
                 }
 
@@ -721,6 +882,9 @@ public struct MenuBarView: View {
                 }
             }
         }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.02))
     }
 
     // MARK: - AI Card
@@ -834,14 +998,50 @@ public struct MenuBarView: View {
             }
             .buttonStyle(.plain)
 
+            // Settings menu
+            Menu {
+                Section("Menu Bar Display") {
+                    ForEach(MenuBarDisplayMode.allCases) { mode in
+                        Button(action: { state.displayMode = mode }) {
+                            HStack {
+                                Text(mode.rawValue)
+                                if state.displayMode == mode {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Divider()
+
+                Section("Usage Chart") {
+                    ForEach(UsageDisplayMode.allCases) { mode in
+                        Button(action: { state.usageMode = mode }) {
+                            HStack {
+                                Text(mode.rawValue)
+                                if state.usageMode == mode {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                }
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 11))
+            }
+            .menuStyle(.borderlessButton)
+            .frame(width: 20)
+
             Button(action: { state.quit() }) {
                 Image(systemName: "xmark")
                     .font(.system(size: 10))
             }
             .buttonStyle(.plain)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
     }
 
     // MARK: - Loading & Error Views
@@ -955,5 +1155,46 @@ public struct MenuBarView: View {
         let totalSeconds = 1800.0  // 30 minutes typical for Agile
         let elapsed = totalSeconds - Double(state.data.rateEndsInSeconds)
         return max(0, min(1, elapsed / totalSeconds))
+    }
+
+    private func formatSessionDate(_ iso: String) -> String {
+        let formatter = ISO8601DateFormatter()
+        guard let date = formatter.date(from: iso) else { return "-" }
+        let df = DateFormatter()
+        df.dateFormat = "MMM d"
+        return df.string(from: date)
+    }
+
+    private func formatDataDateLabel(_ dateStr: String?, fallback: String) -> String {
+        guard let dateStr = dateStr else { return fallback }
+
+        // Parse YYYY-MM-DD format
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd"
+        guard let date = df.date(from: dateStr) else { return fallback }
+
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let yesterday = calendar.date(byAdding: .day, value: -1, to: today)!
+
+        if calendar.isDate(date, inSameDayAs: today) {
+            return "Today"
+        } else if calendar.isDate(date, inSameDayAs: yesterday) {
+            return "Yesterday"
+        } else {
+            // Show date like "Dec 28"
+            let displayDf = DateFormatter()
+            displayDf.dateFormat = "MMM d"
+            return displayDf.string(from: date)
+        }
+    }
+
+    private func formatDuration(_ minutes: Int) -> String {
+        let h = minutes / 60
+        let m = minutes % 60
+        if h > 0 {
+            return "\(h)h \(m)m"
+        }
+        return "\(m)m"
     }
 }

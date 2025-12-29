@@ -87,6 +87,8 @@ class MenuBarServer:
             "monthly_projection": 0.0,
             "peak_rate": None,
             "off_peak_rate": None,
+            "charger_provider": None,  # e.g., "HYPERVOLT", "OHME", "TESLA"
+            "charge_history": [],  # Recent charge sessions [{start, end, kwh, duration_mins}]
         }
 
         try:
@@ -124,6 +126,29 @@ class MenuBarServer:
                         result["next_dispatch_start"] = dispatch.next_dispatch.start.isoformat()
                         result["next_dispatch_end"] = dispatch.next_dispatch.end.isoformat()
 
+                # Get charger/EV provider (e.g., HYPERVOLT, OHME, TESLA)
+                devices = await self.client.get_smart_devices()
+                if devices:
+                    result["charger_provider"] = devices[0].provider
+
+                # Get completed charge sessions history
+                completed = await self.client.get_completed_dispatches(limit=5)
+                charge_history = []
+                # Use off-peak rate for cost calculation (charging happens at off-peak)
+                off_peak_rate = result.get("off_peak_rate") or 7.0
+                for session in completed:
+                    duration = int((session["end"] - session["start"]).total_seconds() / 60)
+                    kwh = round(session["kwh"], 2)
+                    cost = round(kwh * off_peak_rate / 100, 2)  # Convert pence to pounds
+                    charge_history.append({
+                        "start": session["start"].isoformat(),
+                        "end": session["end"].isoformat(),
+                        "kwh": kwh,
+                        "duration_mins": duration,
+                        "cost": cost
+                    })
+                result["charge_history"] = charge_history
+
                 # Live power
                 live_power = await self.client.get_live_power()
                 if live_power:
@@ -144,50 +169,75 @@ class MenuBarServer:
 
                     daily = defaultdict(float)
                     hourly_by_day = defaultdict(lambda: defaultdict(float))
+                    # Half-hourly: slot 0 = 00:00, slot 1 = 00:30, slot 47 = 23:30
+                    half_hourly_by_day = defaultdict(lambda: defaultdict(float))
 
                     for c in consumption:
                         day = c.start.strftime("%Y-%m-%d")
                         hour = c.start.hour
+                        minute = c.start.minute
+                        slot = hour * 2 + (1 if minute >= 30 else 0)  # 0-47
                         daily[day] += c.kwh
                         hourly_by_day[day][hour] += c.kwh
+                        half_hourly_by_day[day][slot] = c.kwh
 
                     sorted_days = sorted(daily.keys(), reverse=True)
+
+                    # Smart meter data has delay - use most recent available days
                     today = datetime.now().strftime("%Y-%m-%d")
                     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
-                    if today in daily:
-                        result["today_kwh"] = daily[today]
+                    # Use actual available data for display
+                    latest_day = sorted_days[0] if sorted_days else None
+                    prev_day = sorted_days[1] if len(sorted_days) > 1 else None
+
+                    # For "today" display, use most recent day with data
+                    display_today = latest_day if latest_day else today
+                    display_yesterday = prev_day if prev_day else yesterday
+
+                    # Include actual data dates so UI can show them
+                    result["data_date_latest"] = display_today
+                    result["data_date_previous"] = display_yesterday
+
+                    if display_today in daily:
+                        result["today_kwh"] = daily[display_today]
                         result["today_cost"] = self._calculate_cost(
-                            daily[today], hourly_by_day[today], tariff
+                            daily[display_today], hourly_by_day[display_today], tariff
                         )
 
-                    if yesterday in daily:
-                        result["yesterday_kwh"] = daily[yesterday]
+                    if display_yesterday in daily:
+                        result["yesterday_kwh"] = daily[display_yesterday]
                         result["yesterday_cost"] = self._calculate_cost(
-                            daily[yesterday], hourly_by_day[yesterday], tariff
+                            daily[display_yesterday], hourly_by_day[display_yesterday], tariff
                         )
 
-                    # Build hourly usage for last 24h
+                    # Build hourly usage from most recent 24h of available data
                     hourly = []
-                    current_hour = datetime.now().hour
+                    if display_yesterday in hourly_by_day:
+                        for h in range(24):
+                            hourly.append(hourly_by_day[display_yesterday].get(h, 0))
+                    if display_today in hourly_by_day:
+                        for h in range(24):
+                            hourly.append(hourly_by_day[display_today].get(h, 0))
+                    # Take last 24 entries
+                    result["hourly_usage"] = hourly[-24:] if hourly else []
 
-                    # Yesterday's hours after current hour
-                    if yesterday in hourly_by_day:
-                        for h in range(current_hour, 24):
-                            hourly.append(hourly_by_day[yesterday].get(h, 0))
+                    # Build half-hourly usage from most recent 48 slots
+                    half_hourly = []
+                    if display_yesterday in half_hourly_by_day:
+                        for s in range(48):
+                            half_hourly.append(half_hourly_by_day[display_yesterday].get(s, 0))
+                    if display_today in half_hourly_by_day:
+                        for s in range(48):
+                            half_hourly.append(half_hourly_by_day[display_today].get(s, 0))
+                    # Take last 48 entries (24 hours of half-hourly data)
+                    result["half_hourly_usage"] = half_hourly[-48:] if half_hourly else []
 
-                    # Today's hours up to current hour
-                    if today in hourly_by_day:
-                        for h in range(0, current_hour + 1):
-                            hourly.append(hourly_by_day[today].get(h, 0))
-
-                    result["hourly_usage"] = hourly
-
-                    # Calculate off-peak percentage for today
-                    if today in hourly_by_day and result["today_kwh"] > 0:
+                    # Calculate off-peak percentage for most recent day
+                    if display_today in hourly_by_day and result["today_kwh"] > 0:
                         # Off-peak hours: 0-5 and 23 (23:30-05:30)
                         off_peak_kwh = sum(
-                            hourly_by_day[today].get(h, 0) for h in list(range(6)) + [23]
+                            hourly_by_day[display_today].get(h, 0) for h in list(range(6)) + [23]
                         )
                         result["off_peak_percentage"] = round(
                             (off_peak_kwh / result["today_kwh"]) * 100, 1
@@ -258,6 +308,8 @@ class MenuBarServer:
             "monthly_projection": 0.0,
             "peak_rate": None,
             "off_peak_rate": None,
+            "charger_provider": None,
+            "charge_history": [],
         }
 
     async def handle_ask(self, question: str) -> dict[str, Any]:

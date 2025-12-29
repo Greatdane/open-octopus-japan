@@ -558,6 +558,39 @@ class OctopusClient:
             next_dispatch=next_dispatch
         )
 
+    async def get_completed_dispatches(self, limit: int = 10) -> list[dict]:
+        """
+        Get completed dispatch/charge sessions.
+
+        Returns:
+            List of completed dispatch dicts with start, end, and delta (kWh)
+        """
+        data = await self._graphql(
+            """
+            query GetCompletedDispatches($account: String!) {
+                completedDispatches(accountNumber: $account) {
+                    start
+                    end
+                    delta
+                }
+            }
+            """,
+            {"account": self.account}
+        )
+
+        sessions = []
+        for d in data.get("completedDispatches") or []:
+            try:
+                sessions.append({
+                    "start": datetime.fromisoformat(d["start"].replace("Z", "+00:00")),
+                    "end": datetime.fromisoformat(d["end"].replace("Z", "+00:00")),
+                    "kwh": abs(float(d.get("delta", 0)))  # Energy transferred
+                })
+            except (ValueError, KeyError):
+                continue
+
+        return sorted(sessions, key=lambda s: s["start"], reverse=True)[:limit]
+
     # -------------------------------------------------------------------------
     # Saving Sessions
     # -------------------------------------------------------------------------
