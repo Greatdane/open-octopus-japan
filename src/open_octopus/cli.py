@@ -27,21 +27,67 @@ app = typer.Typer(
 console = Console()
 
 
+def load_env():
+    """Load ~/.octopus.env into environment variables."""
+    env_file = os.path.expanduser("~/.octopus.env")
+    if os.path.exists(env_file):
+        with open(env_file, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    key, value = line.split("=", 1)
+                    key = key.strip()
+                    # Handle 'export ' prefix
+                    if key.startswith("export "):
+                        key = key[len("export "):].strip()
+                    # Strip quotes from value
+                    value = value.strip().strip("'").strip('"')
+                    os.environ[key] = value
+
+
 def get_client() -> OctopusClient:
     """Create client from environment variables."""
+    load_env()
+    # Check for Japan credentials first (preferred)
+    email = os.environ.get("OCTOPUS_EMAIL")
+    password = os.environ.get("OCTOPUS_PASSWORD")
+    account = os.environ.get("OCTOPUS_ACCOUNT")  # Optional for Japan (auto-discovered)
+    region = os.environ.get("OCTOPUS_REGION", "japan").lower()
+
+    if email and password:
+        # Japan mode: email/password auth
+        return OctopusClient(
+            email=email,
+            password=password,
+            account=account,
+            region="japan"
+        )
+
+    # Fall back to UK mode: API key auth
     api_key = os.environ.get("OCTOPUS_API_KEY")
-    account = os.environ.get("OCTOPUS_ACCOUNT")
     mpan = os.environ.get("OCTOPUS_MPAN")
     meter_serial = os.environ.get("OCTOPUS_METER_SERIAL")
 
-    if not api_key or not account:
-        console.print("[red]Error:[/] OCTOPUS_API_KEY and OCTOPUS_ACCOUNT must be set")
-        console.print("\nSet environment variables:")
-        console.print("  export OCTOPUS_API_KEY='sk_live_xxx'")
-        console.print("  export OCTOPUS_ACCOUNT='A-XXXXXXXX'")
-        raise typer.Exit(1)
+    if api_key and account:
+        return OctopusClient(
+            api_key=api_key,
+            account=account,
+            mpan=mpan,
+            meter_serial=meter_serial,
+            region="uk"
+        )
 
-    return OctopusClient(api_key, account, mpan, meter_serial)
+    # No valid credentials found
+    console.print("[red]Error:[/] No valid credentials found")
+    console.print("\n[bold]For Octopus Energy Japan:[/]")
+    console.print("  export OCTOPUS_EMAIL='your-email@example.com'")
+    console.print("  export OCTOPUS_PASSWORD='your-password'")
+    console.print("\n[bold]For Octopus Energy UK:[/]")
+    console.print("  export OCTOPUS_API_KEY='sk_live_xxx'")
+    console.print("  export OCTOPUS_ACCOUNT='A-XXXXXXXX'")
+    raise typer.Exit(1)
 
 
 def run_async(coro):
@@ -60,12 +106,21 @@ def account():
         async with get_client() as client:
             acc = await client.get_account()
 
-            balance_color = "green" if acc.balance < 0 else "yellow"
-            balance_text = f"£{abs(acc.balance):.2f} {'credit' if acc.balance < 0 else 'owed'}"
+            # Format balance based on region
+            if client.is_japan:
+                balance_color = "green" if acc.balance < 0 else "yellow"
+                balance_text = f"¥{abs(acc.balance):,.0f} {'credit' if acc.balance < 0 else 'owed'}"
+                currency_symbol = "¥"
+            else:
+                balance_color = "green" if acc.balance < 0 else "yellow"
+                balance_text = f"£{abs(acc.balance):.2f} {'credit' if acc.balance < 0 else 'owed'}"
+                currency_symbol = "£"
 
+            region_label = "Japan" if client.is_japan else "UK"
             console.print(Panel(
                 f"[bold]{acc.name}[/]\n"
                 f"Account: {acc.number}\n"
+                f"Region: {region_label}\n"
                 f"Status: {acc.status}\n"
                 f"Balance: [{balance_color}]{balance_text}[/]\n"
                 f"Address: {acc.address}",
@@ -75,11 +130,15 @@ def account():
     run_async(_run())
 
 
-@app.command()
+@app.command(hidden=True)  # Hidden: UK-only feature
 def rate():
-    """Show current electricity rate."""
+    """Show current electricity rate. (UK only)"""
     async def _run():
         async with get_client() as client:
+            if client.is_japan:
+                console.print("[yellow]Note:[/] Rate display not yet available for Japan")
+                return
+
             tariff = await client.get_tariff()
             if not tariff:
                 console.print("[red]Could not fetch tariff info[/]")
@@ -103,11 +162,15 @@ def rate():
     run_async(_run())
 
 
-@app.command()
+@app.command(hidden=True)  # Hidden: UK-only feature
 def dispatch():
-    """Show Intelligent Octopus dispatch status."""
+    """Show Intelligent Octopus dispatch status. (UK only)"""
     async def _run():
         async with get_client() as client:
+            if client.is_japan:
+                console.print("[yellow]Note:[/] Dispatch/EV charging not available for Japan")
+                return
+
             status = await client.get_dispatch_status()
 
             if status.is_dispatching and status.current_dispatch:
@@ -125,7 +188,6 @@ def dispatch():
             else:
                 console.print("[dim]🔌 No dispatches scheduled[/]")
 
-            # Show all upcoming dispatches
             dispatches = await client.get_dispatches()
             if len(dispatches) > 1:
                 console.print("\n[bold]Upcoming dispatches:[/]")
@@ -135,11 +197,15 @@ def dispatch():
     run_async(_run())
 
 
-@app.command()
+@app.command(hidden=True)  # Hidden: UK-only feature
 def power():
-    """Show live power consumption (requires Home Mini)."""
+    """Show live power consumption (requires Home Mini). (UK only)"""
     async def _run():
         async with get_client() as client:
+            if client.is_japan:
+                console.print("[yellow]Note:[/] Live power not available for Japan")
+                return
+
             live = await client.get_live_power()
 
             if live:
@@ -152,7 +218,6 @@ def power():
                 console.print(f"[bold]⚡ {power_str}[/]")
                 console.print(f"[dim]   Read at {live.read_at.strftime('%H:%M:%S')}[/]")
 
-                # Estimate hourly cost
                 tariff = await client.get_tariff()
                 if tariff:
                     current = client.get_current_rate(tariff)
@@ -165,11 +230,15 @@ def power():
     run_async(_run())
 
 
-@app.command()
+@app.command(hidden=True)  # Hidden: UK-only feature
 def sessions():
-    """Show upcoming Saving Sessions (free electricity)."""
+    """Show upcoming Saving Sessions (free electricity). (UK only)"""
     async def _run():
         async with get_client() as client:
+            if client.is_japan:
+                console.print("[yellow]Note:[/] Saving Sessions not available for Japan")
+                return
+
             sessions = await client.get_saving_sessions()
 
             if not sessions:

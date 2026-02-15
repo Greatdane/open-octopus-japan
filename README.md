@@ -1,7 +1,9 @@
-# 🐙 Open Octopus
+# 🐙 Open Octopus Japan
 
-> **Unofficial** open-source toolkit for [Octopus Energy](https://octopus.energy) customers.
+> **Unofficial** open-source toolkit for [Octopus Energy Japan](https://octopusenergy.co.jp) customers.
 > Not affiliated with or endorsed by Octopus Energy.
+> 
+> *Adapted from the original UK version. Some UK-only features are hidden.*
 
 <img src="docs/menubar-screenshot.png" width="300" alt="Open Octopus Menu Bar App">
 
@@ -55,21 +57,17 @@ pip install open-octopus
 
 ### Configuration
 
-Set your credentials:
+Set your Octopus Energy Japan credentials:
 ```bash
-export OCTOPUS_API_KEY="sk_live_xxxxx"
-export OCTOPUS_ACCOUNT="A-XXXXXXXX"
-export OCTOPUS_MPAN="1234567890123"        # For consumption data
-export OCTOPUS_METER_SERIAL="12A3456789"   # For consumption data
-export ANTHROPIC_API_KEY="sk-ant-xxxxx"    # For AI features
+export OCTOPUS_EMAIL="your-email@example.com"
+export OCTOPUS_PASSWORD="your-password"
+export ANTHROPIC_API_KEY="sk-ant-xxxxx"    # For AI features (optional)
 ```
 
 Or create `~/.octopus.env`:
 ```bash
-OCTOPUS_API_KEY=sk_live_xxxxx
-OCTOPUS_ACCOUNT=A-XXXXXXXX
-OCTOPUS_MPAN=1234567890123
-OCTOPUS_METER_SERIAL=12A3456789
+OCTOPUS_EMAIL=your-email@example.com
+OCTOPUS_PASSWORD=your-password
 ANTHROPIC_API_KEY=sk-ant-xxxxx
 ```
 
@@ -82,14 +80,11 @@ xcodebuild -workspace OctopusMenuBar.xcworkspace -scheme OctopusMenuBar build
 open ~/Library/Developer/Xcode/DerivedData/OctopusMenuBar-*/Build/Products/Debug/OctopusMenuBar.app
 ```
 
-## Supported Tariffs
+## Supported Tariffs (Japan)
 
-- Intelligent Octopus Go
-- Octopus Go
-- Agile Octopus
-- Flexible Octopus
-- Tracker
-- And more...
+- グリーンオクトパス (Green Octopus)
+- シンプルオクトパス (Simple Octopus)
+- Other Japan tariffs
 
 ## Roadmap
 

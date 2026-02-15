@@ -21,6 +21,7 @@ class Consumption:
     start: datetime
     end: datetime
     kwh: float
+    cost_estimate: Optional[float] = None  # Estimated cost in local currency (Japan: yen)
 
 
 @dataclass

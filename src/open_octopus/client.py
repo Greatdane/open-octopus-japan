@@ -1,8 +1,8 @@
-"""Async client for the Octopus Energy GraphQL API."""
+"""Async client for the Octopus Energy GraphQL API (UK and Japan)."""
 
 import httpx
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Literal
 
 from .models import (
     Account, Consumption, GasConsumption, Tariff, GasTariff, Rate,
@@ -11,30 +11,53 @@ from .models import (
 )
 
 
-GRAPHQL_URL = "https://api.octopus.energy/v1/graphql/"
-REST_API_URL = "https://api.octopus.energy/v1"
+# API Endpoints by region
+GRAPHQL_URLS = {
+    "uk": "https://api.octopus.energy/v1/graphql/",
+    "japan": "https://api.oejp-kraken.energy/v1/graphql/",
+}
+REST_API_URL = "https://api.octopus.energy/v1"  # UK only
+
+# Legacy constants for backwards compatibility
+GRAPHQL_URL = GRAPHQL_URLS["japan"]  # Default to Japan
 
 
 class OctopusClient:
     """
     Async client for Octopus Energy's GraphQL (Kraken) API.
 
-    Supports features not available in the REST API:
+    Supports both UK and Japan regions. UK features include:
     - Live power consumption (requires Home Mini)
     - Intelligent Octopus dispatch slots
     - Saving Sessions / Free Electricity events
+    - Gas consumption
+
+    Japan features include:
+    - Half-hourly electricity consumption
     - Account balance and status
 
-    Example:
-        >>> async with OctopusClient(api_key="sk_live_xxx", account="A-1234") as client:
+    Example (Japan):
+        >>> async with OctopusClient(email="user@example.com", password="xxx", region="japan") as client:
+        ...     account = await client.get_account()
+        ...     print(f"Balance: ¥{account.balance:.0f}")
+
+    Example (UK - legacy):
+        >>> async with OctopusClient(api_key="sk_live_xxx", account="A-1234", region="uk") as client:
         ...     account = await client.get_account()
         ...     print(f"Balance: £{account.balance:.2f}")
     """
 
     def __init__(
         self,
-        api_key: str,
-        account: str,
+        # Japan auth (email/password)
+        email: Optional[str] = None,
+        password: Optional[str] = None,
+        # UK auth (API key)
+        api_key: Optional[str] = None,
+        # Common
+        account: Optional[str] = None,
+        region: Literal["japan", "uk"] = "japan",
+        # UK-specific meter identifiers
         mpan: Optional[str] = None,
         meter_serial: Optional[str] = None,
         gas_mprn: Optional[str] = None,
@@ -44,13 +67,19 @@ class OctopusClient:
         Initialize the Octopus Energy client.
 
         Args:
-            api_key: Your Octopus API key (starts with sk_live_)
-            account: Your account number (e.g., A-FB05ED6C)
-            mpan: Meter Point Administration Number (for electricity consumption)
-            meter_serial: Electricity meter serial number
-            gas_mprn: Meter Point Reference Number (for gas consumption)
-            gas_meter_serial: Gas meter serial number
+            email: Your Octopus account email (Japan)
+            password: Your Octopus account password (Japan)
+            api_key: Your Octopus API key (UK, starts with sk_live_)
+            account: Your account number (e.g., A-FB05ED6C). Auto-discovered if not provided.
+            region: "japan" or "uk" (default: japan)
+            mpan: Meter Point Administration Number (UK, for electricity consumption)
+            meter_serial: Electricity meter serial number (UK)
+            gas_mprn: Meter Point Reference Number (UK, for gas consumption)
+            gas_meter_serial: Gas meter serial number (UK)
         """
+        self.region = region
+        self.email = email
+        self.password = password
         self.api_key = api_key
         self.account = account
         self.mpan = mpan
@@ -59,8 +88,15 @@ class OctopusClient:
         self.gas_meter_serial = gas_meter_serial
 
         self._token: Optional[str] = None
+        self._refresh_token: Optional[str] = None
         self._token_expires: Optional[datetime] = None
         self._http: Optional[httpx.AsyncClient] = None
+        self._graphql_url = GRAPHQL_URLS.get(region, GRAPHQL_URLS["japan"])
+
+    @property
+    def is_japan(self) -> bool:
+        """Check if using Japan API."""
+        return self.region == "japan"
 
     async def __aenter__(self):
         """Async context manager entry."""
@@ -85,26 +121,61 @@ class OctopusClient:
             return self._token
 
         http = await self._get_http()
-        resp = await http.post(
-            GRAPHQL_URL,
-            json={
-                "query": """
-                    mutation ObtainToken($key: String!) {
-                        obtainKrakenToken(input: {APIKey: $key}) {
-                            token
+
+        if self.is_japan:
+            # Japan: email/password or refresh token authentication
+            if self._refresh_token:
+                # Use refresh token
+                variables = {"input": {"refreshToken": self._refresh_token}}
+            elif self.email and self.password:
+                # Use email/password
+                variables = {"input": {"email": self.email, "password": self.password}}
+            else:
+                raise AuthenticationError("Japan region requires email and password")
+
+            resp = await http.post(
+                self._graphql_url,
+                json={
+                    "query": """
+                        mutation obtainKrakenToken($input: ObtainJSONWebTokenInput!) {
+                            obtainKrakenToken(input: $input) {
+                                token
+                                refreshToken
+                            }
                         }
-                    }
-                """,
-                "variables": {"key": self.api_key}
-            }
-        )
+                    """,
+                    "variables": variables
+                }
+            )
+        else:
+            # UK: API key authentication
+            if not self.api_key:
+                raise AuthenticationError("UK region requires API key")
+
+            resp = await http.post(
+                self._graphql_url,
+                json={
+                    "query": """
+                        mutation ObtainToken($key: String!) {
+                            obtainKrakenToken(input: {APIKey: $key}) {
+                                token
+                            }
+                        }
+                    """,
+                    "variables": {"key": self.api_key}
+                }
+            )
+
         resp.raise_for_status()
         data = resp.json()
 
         if "errors" in data:
             raise AuthenticationError(data["errors"][0]["message"])
 
-        self._token = data["data"]["obtainKrakenToken"]["token"]
+        token_data = data["data"]["obtainKrakenToken"]
+        self._token = token_data["token"]
+        if "refreshToken" in token_data:
+            self._refresh_token = token_data["refreshToken"]
         self._token_expires = datetime.now() + timedelta(minutes=55)
         return self._token
 
@@ -114,7 +185,7 @@ class OctopusClient:
         http = await self._get_http()
 
         resp = await http.post(
-            GRAPHQL_URL,
+            self._graphql_url,
             headers={"Authorization": token},
             json={"query": query, "variables": variables or {}}
         )
@@ -130,6 +201,32 @@ class OctopusClient:
     # Account & Billing
     # -------------------------------------------------------------------------
 
+    async def _ensure_account(self) -> str:
+        """Ensure account number is available, auto-discovering if needed (Japan)."""
+        if self.account:
+            return self.account
+
+        if self.is_japan:
+            # Auto-discover account number from viewer query
+            data = await self._graphql(
+                """
+                query accountViewer {
+                    viewer {
+                        accounts {
+                            number
+                        }
+                    }
+                }
+                """
+            )
+            accounts = data.get("viewer", {}).get("accounts", [])
+            if accounts:
+                self.account = accounts[0]["number"]
+                return self.account
+            raise ConfigurationError("No account found for this user")
+        else:
+            raise ConfigurationError("Account number required for UK region")
+
     async def get_account(self) -> Account:
         """
         Get account information including balance.
@@ -137,6 +234,8 @@ class OctopusClient:
         Returns:
             Account with balance, name, status and address
         """
+        account_number = await self._ensure_account()
+
         data = await self._graphql(
             """
             query GetAccount($account: String!) {
@@ -150,15 +249,22 @@ class OctopusClient:
                 }
             }
             """,
-            {"account": self.account}
+            {"account": account_number}
         )
         acc = data["account"]
+
+        # Balance conversion: pence to pounds (UK) or yen (Japan, already in yen)
+        if self.is_japan:
+            balance = acc["balance"]  # Already in yen
+        else:
+            balance = acc["balance"] / 100  # pence to pounds
+
         return Account(
-            number=self.account,
-            balance=acc["balance"] / 100,  # pence to pounds
-            name=acc["billingName"],
-            status=acc["status"],
-            address=acc["properties"][0]["address"] if acc["properties"] else ""
+            number=account_number,
+            balance=balance,
+            name=acc["billingName"] or "",
+            status=acc["status"] or "",
+            address=acc["properties"][0]["address"] if acc.get("properties") else ""
         )
 
     # -------------------------------------------------------------------------
@@ -176,14 +282,87 @@ class OctopusClient:
 
         Args:
             periods: Number of 30-minute periods (default 48 = 24 hours)
-            start: Start datetime (optional)
-            end: End datetime (optional)
+            start: Start datetime (optional, defaults to last 24 hours)
+            end: End datetime (optional, defaults to now)
 
         Returns:
             List of Consumption readings
         """
+        if self.is_japan:
+            # Japan: Use GraphQL API
+            return await self._get_consumption_japan(periods, start, end)
+        else:
+            # UK: Use REST API
+            return await self._get_consumption_uk(periods, start, end)
+
+    async def _get_consumption_japan(
+        self,
+        periods: int = 48,
+        start: Optional[datetime] = None,
+        end: Optional[datetime] = None
+    ) -> list[Consumption]:
+        """Get consumption data from Japan GraphQL API."""
+        account_number = await self._ensure_account()
+
+        # Default to last 24 hours if not specified
+        if not end:
+            end = datetime.now()
+        if not start:
+            start = end - timedelta(minutes=30 * periods)
+
+        data = await self._graphql(
+            """
+            query halfHourlyReadings($accountNumber: String!, $fromDatetime: DateTime, $toDatetime: DateTime) {
+                account(accountNumber: $accountNumber) {
+                    properties {
+                        electricitySupplyPoints {
+                            status
+                            halfHourlyReadings(fromDatetime: $fromDatetime, toDatetime: $toDatetime) {
+                                startAt
+                                value
+                                costEstimate
+                            }
+                        }
+                    }
+                }
+            }
+            """,
+            {
+                "accountNumber": account_number,
+                "fromDatetime": start.isoformat(),
+                "toDatetime": end.isoformat()
+            }
+        )
+
+        readings = []
+        properties = data.get("account", {}).get("properties", [])
+        for prop in properties:
+            for supply_point in prop.get("electricitySupplyPoints", []):
+                for r in supply_point.get("halfHourlyReadings", []):
+                    try:
+                        start_at = datetime.fromisoformat(r["startAt"].replace("Z", "+00:00"))
+                        # End is 30 minutes after start
+                        end_at = start_at + timedelta(minutes=30)
+                        readings.append(Consumption(
+                            start=start_at,
+                            end=end_at,
+                            kwh=float(r["value"]),
+                            cost_estimate=float(r.get("costEstimate") or 0)
+                        ))
+                    except (ValueError, KeyError, TypeError):
+                        continue
+
+        return sorted(readings, key=lambda c: c.start)
+
+    async def _get_consumption_uk(
+        self,
+        periods: int = 48,
+        start: Optional[datetime] = None,
+        end: Optional[datetime] = None
+    ) -> list[Consumption]:
+        """Get consumption data from UK REST API."""
         if not self.mpan or not self.meter_serial:
-            raise ConfigurationError("MPAN and meter serial required for consumption data")
+            raise ConfigurationError("MPAN and meter serial required for UK consumption data")
 
         http = await self._get_http()
         params = {"page_size": periods}

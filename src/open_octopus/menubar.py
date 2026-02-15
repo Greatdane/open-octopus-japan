@@ -33,6 +33,11 @@ except ImportError:
     HAS_AGENT = False
 
 
+# Guard against rumps not being installed
+if rumps is None:
+    raise ImportError("rumps is required for the menu bar app. Install with: pip install 'open-octopus[menubar]'")
+
+
 class OctopusMenuBar(rumps.App):
     """Octopus Energy menu bar app - real-time energy monitoring."""
 

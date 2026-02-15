@@ -157,8 +157,8 @@ public class AppState: ObservableObject {
     private var refreshTimer: Timer?
 
     public var menuBarTitle: String {
-        // Show charging icon when car is dispatching
-        let isCharging = data.dispatchStatus == "charging"
+        // Show charging icon when car is dispatching (UK only, hidden for Japan)
+        let isCharging = false  // JAPAN: disable charging indicator
 
         switch displayMode {
         case .iconOnly:
@@ -178,7 +178,7 @@ public class AppState: ObservableObject {
         case .rate:
             let prefix = isCharging ? "🔌 " : ""
             if let rate = data.rate {
-                return prefix + String(format: "%.0fp", rate)
+                return prefix + String(format: "¥%.0f", rate)
             }
             return isCharging ? "🔌" : "⚡"
 
@@ -190,7 +190,7 @@ public class AppState: ObservableObject {
                 return prefix + power
             }
             if let rate = data.rate {
-                return prefix + String(format: "%.0fp", rate)
+                return prefix + String(format: "¥%.0f", rate)
             }
             return isCharging ? "🔌" : "⚡"
         }
@@ -457,12 +457,14 @@ public struct MenuBarView: View {
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(spacing: 8) {
                         usageCard
-                        if state.data.dispatchStatus != "none" {
-                            chargingCard
-                        }
-                        if state.data.savingSessionActive || state.data.hasSavingSession {
-                            savingSessionCard
-                        }
+                        // JAPAN: EV charging not available - hiding card
+                        // if state.data.dispatchStatus != "none" {
+                        //     chargingCard
+                        // }
+                        // JAPAN: Saving sessions not available - hiding card
+                        // if state.data.savingSessionActive || state.data.hasSavingSession {
+                        //     savingSessionCard
+                        // }
                         rateCard
                         insightsCard
                         aiCard
@@ -501,7 +503,7 @@ public struct MenuBarView: View {
                         HStack(spacing: 4) {
                             Image(systemName: state.data.isOffPeak ? "moon.fill" : "sun.max.fill")
                                 .foregroundColor(state.data.isOffPeak ? .cyan : .orange)
-                            Text(String(format: "%.1fp", rate))
+                            Text(String(format: "¥%.1f", rate))
                                 .font(.system(size: 22, weight: .semibold, design: .rounded))
                         }
                         Text(state.data.isOffPeak ? "Off-peak rate" : "Peak rate")
@@ -531,7 +533,7 @@ public struct MenuBarView: View {
                 )
 
                 HStack {
-                    Text(String(format: "%.1fp", state.data.rate ?? 0))
+                    Text(String(format: "¥%.1f", state.data.rate ?? 0))
                         .font(.system(size: 9, design: .monospaced))
                         .foregroundColor(state.data.isOffPeak ? .cyan : .orange)
 
@@ -539,7 +541,7 @@ public struct MenuBarView: View {
                         .font(.system(size: 8))
                         .foregroundColor(.secondary)
 
-                    Text(String(format: "%.1fp", state.data.isOffPeak ? (state.data.peakRate ?? 0) : (state.data.offPeakRate ?? 0)))
+                    Text(String(format: "¥%.1f", state.data.isOffPeak ? (state.data.peakRate ?? 0) : (state.data.offPeakRate ?? 0)))
                         .font(.system(size: 9, design: .monospaced))
                         .foregroundColor(.secondary)
 
@@ -569,7 +571,7 @@ public struct MenuBarView: View {
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
                     Spacer()
-                    Text(String(format: "%.1fp", state.data.peakRate ?? state.data.rate ?? 0))
+                    Text(String(format: "¥%.1f", state.data.peakRate ?? state.data.rate ?? 0))
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
                     Text("05:30–23:30")
                         .font(.system(size: 9))
@@ -585,7 +587,7 @@ public struct MenuBarView: View {
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
                     Spacer()
-                    Text(String(format: "%.1fp", state.data.offPeakRate ?? 7.0))
+                    Text(String(format: "¥%.1f", state.data.offPeakRate ?? 7.0))
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
                     Text("23:30–05:30")
                         .font(.system(size: 9))
@@ -598,7 +600,7 @@ public struct MenuBarView: View {
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
                     Spacer()
-                    Text(String(format: "%.2fp/day", state.data.standingCharge))
+                    Text(String(format: "¥%.0f/day", state.data.standingCharge))
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundColor(.secondary)
                 }
@@ -860,21 +862,21 @@ public struct MenuBarView: View {
                         Image(systemName: "calendar")
                             .font(.system(size: 10))
                             .foregroundColor(.purple)
-                        Text(String(format: "On track for £%.0f/month", state.data.monthlyProjection))
+                        Text(String(format: "On track for ¥%.0f/month", state.data.monthlyProjection))
                             .font(.system(size: 11, weight: .medium))
                     }
                 }
 
                 // Estimated savings (rough calculation)
                 if state.data.yesterdayCost > 0 {
-                    let standardRate = 24.5  // Average standard rate
-                    let savingsEstimate = (state.data.yesterdayKwh * standardRate / 100) - state.data.yesterdayCost
+                    let standardRate = 30.0  // Average standard rate (yen/kWh)
+                    let savingsEstimate = (state.data.yesterdayKwh * standardRate) - state.data.yesterdayCost
                     if savingsEstimate > 0 {
                         HStack(spacing: 4) {
                             Image(systemName: "arrow.down.circle.fill")
                                 .font(.system(size: 10))
                                 .foregroundColor(.green)
-                            Text(String(format: "Saved ~£%.2f yesterday vs standard", savingsEstimate))
+                            Text(String(format: "Saved ~¥%.0f yesterday vs standard", savingsEstimate))
                                 .font(.system(size: 11))
                                 .foregroundColor(.green)
                         }
@@ -992,7 +994,7 @@ public struct MenuBarView: View {
 
             Spacer()
 
-            Button(action: { NSWorkspace.shared.open(URL(string: "https://octopus.energy/dashboard/")!) }) {
+            Button(action: { NSWorkspace.shared.open(URL(string: "https://octopusenergy.co.jp/")!) }) {
                 Image(systemName: "arrow.up.right.square")
                     .font(.system(size: 11))
             }
@@ -1081,7 +1083,7 @@ public struct MenuBarView: View {
     // MARK: - Formatters
 
     private func formatBalance(_ amount: Double, credit: Bool) -> String {
-        let formatted = String(format: "£%.2f", amount)
+        let formatted = String(format: "¥%.0f", amount)
         return credit ? "+\(formatted)" : formatted
     }
 
@@ -1091,7 +1093,7 @@ public struct MenuBarView: View {
 
     private func formatCostPerHour(_ watts: Int, rate: Double) -> String {
         let cost = (Double(watts) / 1000) * rate
-        return String(format: "%.1fp/h", cost)
+        return String(format: "¥%.0f/h", cost)
     }
 
     private func formatTimeRemaining(_ seconds: Int) -> String {
@@ -1105,7 +1107,7 @@ public struct MenuBarView: View {
     }
 
     private func formatCost(_ cost: Double) -> String {
-        String(format: "£%.2f", cost)
+        String(format: "¥%.0f", cost)
     }
 
     private func formatTime(_ iso: String?) -> String {
