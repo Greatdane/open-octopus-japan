@@ -193,6 +193,11 @@ class OctopusClient:
         data = resp.json()
 
         if "errors" in data:
+            # If we also got data back, treat as partial success (common with Japan API)
+            if data.get("data"):
+                import sys
+                print(f"GraphQL partial error: {data['errors'][0]['message']}", file=sys.stderr)
+                return data["data"]
             raise APIError(data["errors"][0]["message"])
 
         return data["data"]
@@ -338,7 +343,9 @@ class OctopusClient:
         properties = data.get("account", {}).get("properties", [])
         for prop in properties:
             for supply_point in prop.get("electricitySupplyPoints", []):
-                for r in supply_point.get("halfHourlyReadings", []):
+                if supply_point is None:
+                    continue
+                for r in supply_point.get("halfHourlyReadings", []) or []:
                     try:
                         start_at = datetime.fromisoformat(r["startAt"].replace("Z", "+00:00"))
                         # End is 30 minutes after start
@@ -557,11 +564,107 @@ class OctopusClient:
         Get current electricity tariff details.
 
         Args:
-            region: DNO region code (default J = Scotland)
+            region: DNO region code (UK only, default J = Scotland)
 
         Returns:
             Tariff with rates, or None if not found
         """
+        if self.is_japan:
+            return await self._get_tariff_japan()
+        else:
+            return await self._get_tariff_uk(region)
+
+    async def _get_tariff_japan(self) -> Optional[Tariff]:
+        """Get tariff from Japan GraphQL API."""
+        account_number = await self._ensure_account()
+
+        data = await self._graphql(
+            """
+            query GetTariffJapan($account: String!) {
+                account(accountNumber: $account) {
+                    properties {
+                        electricitySupplyPoints {
+                            agreements {
+                                validFrom
+                                validTo
+                                product {
+                                    ... on ProductInterface {
+                                        code
+                                        displayName
+                                        standingChargePricePerDay
+                                        standingChargeUnitType
+                                        fuelCostAdjustment {
+                                            pricePerUnitIncTax
+                                        }
+                                        renewableEnergyLevy {
+                                            pricePerUnitIncTax
+                                        }
+                                    }
+                                    ... on ElectricitySingleStepProduct {
+                                        consumptionCharges {
+                                            pricePerUnitIncTax
+                                            band
+                                            timeOfUse
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            """,
+            {"account": account_number}
+        )
+
+        # Find the active agreement
+        properties = data.get("account", {}).get("properties", [])
+        for prop in properties:
+            for sp in prop.get("electricitySupplyPoints", []):
+                if sp is None:
+                    continue
+                for agreement in sp.get("agreements", []):
+                    product = agreement.get("product")
+                    if not product:
+                        continue
+
+                    code = product.get("code", "")
+                    display_name = product.get("displayName", "Unknown")
+                    standing_charge = float(product.get("standingChargePricePerDay") or 0)
+
+                    # Get fuel cost adjustment and renewable levy (per kWh)
+                    fca = float(product.get("fuelCostAdjustment", {}).get("pricePerUnitIncTax") or 0)
+                    rel = float(product.get("renewableEnergyLevy", {}).get("pricePerUnitIncTax") or 0)
+
+                    # Parse consumption charges (unit rate per kWh)
+                    rates = {}
+                    unit_rate = None
+                    for charge in product.get("consumptionCharges", []) or []:
+                        rate = float(charge.get("pricePerUnitIncTax") or 0)
+                        band = charge.get("band", "")
+                        tou = charge.get("timeOfUse", "")
+                        rates[band or tou or "standard"] = rate
+                        if unit_rate is None or band == "standard":
+                            unit_rate = rate
+
+                    # Total effective rate = unit rate + fuel cost adj + renewable levy
+                    effective_rate = (unit_rate or 0) + fca + rel
+
+                    return Tariff(
+                        name=display_name,
+                        product_code=code,
+                        standing_charge=standing_charge,
+                        rates={"standard": effective_rate, "base": unit_rate or 0, "fca": fca, "rel": rel, **rates},
+                        off_peak_rate=None,  # Japan: flat rate, no off-peak
+                        peak_rate=effective_rate,
+                        off_peak_start=None,
+                        off_peak_end=None
+                    )
+
+        return None
+
+    async def _get_tariff_uk(self, region: str = "J") -> Optional[Tariff]:
+        """Get tariff from UK GraphQL + REST API."""
         data = await self._graphql(
             """
             query GetTariff($account: String!) {
@@ -644,6 +747,17 @@ class OctopusClient:
             Rate with current pricing and time info
         """
         now = datetime.now()
+
+        if self.is_japan:
+            # Japan: flat rate (no time-of-use distinction)
+            rate = tariff.peak_rate or tariff.rates.get("standard", 0)
+            return Rate(
+                rate=rate,
+                is_off_peak=False,
+                period_end=now.replace(hour=23, minute=59, second=59) + timedelta(seconds=1),
+                next_rate=rate
+            )
+
         current_time = now.strftime("%H:%M")
 
         # Intelligent Octopus Go: off-peak 23:30 - 05:30

@@ -265,11 +265,14 @@ def usage(days: int = typer.Option(7, "--days", "-d", help="Number of days")):
                 daily = await client.get_daily_usage(days)
             except Exception as e:
                 console.print(f"[red]Error:[/] {e}")
-                console.print("[dim]Note: MPAN and meter serial required for consumption data[/]")
+                if client.is_japan:
+                    console.print("[dim]Note: New accounts may not have meter readings available yet[/]")
+                else:
+                    console.print("[dim]Note: MPAN and meter serial required for consumption data[/]")
                 return
 
             if not daily:
-                console.print("[dim]No consumption data available[/]")
+                console.print("[dim]No consumption data available yet. Meter readings typically take 24-48 hours to appear.[/]")
                 return
 
             table = Table(title=f"Last {days} Days Usage")
@@ -298,7 +301,10 @@ def status():
             # Account
             try:
                 acc = await client.get_account()
-                balance_text = f"£{abs(acc.balance):.2f} {'credit' if acc.balance < 0 else 'owed'}"
+                if client.is_japan:
+                    balance_text = f"¥{abs(acc.balance):.0f} {'credit' if acc.balance < 0 else 'owed'}"
+                else:
+                    balance_text = f"£{abs(acc.balance):.2f} {'credit' if acc.balance < 0 else 'owed'}"
                 console.print(f"💰 Balance: [bold]{balance_text}[/]")
             except OctopusError as e:
                 console.print(f"[red]Account error: {e}[/]")
@@ -309,40 +315,44 @@ def status():
                 if tariff:
                     current = client.get_current_rate(tariff)
                     rate_icon = "🌙" if current.is_off_peak else "☀️"
-                    console.print(f"{rate_icon} Rate: [bold]{current.rate:.1f}p/kWh[/]")
-            except OctopusError:
-                pass
-
-            # Live power
-            try:
-                live = await client.get_live_power()
-                if live:
-                    power_str = f"{live.demand_kw:.2f}kW" if live.demand_watts >= 1000 else f"{live.demand_watts}W"
-                    console.print(f"⚡ Power: [bold]{power_str}[/]")
-            except OctopusError:
-                pass
-
-            # Dispatch
-            try:
-                status = await client.get_dispatch_status()
-                if status.is_dispatching:
-                    console.print(f"🔌 [green]CHARGING[/]")
-                elif status.next_dispatch:
-                    console.print(f"🔌 Next: {status.next_dispatch.start.strftime('%H:%M')}")
-            except OctopusError:
-                pass
-
-            # Sessions
-            try:
-                sessions = await client.get_saving_sessions()
-                if sessions:
-                    s = sessions[0]
-                    if s.is_active:
-                        console.print(f"🎁 [green bold]FREE POWER[/] until {s.end.strftime('%H:%M')}")
+                    if client.is_japan:
+                        console.print(f"{rate_icon} Rate: [bold]¥{current.rate:.1f}/kWh[/]")
                     else:
-                        console.print(f"🎁 Session: {s.start.strftime('%a %H:%M')}")
+                        console.print(f"{rate_icon} Rate: [bold]{current.rate:.1f}p/kWh[/]")
             except OctopusError:
                 pass
+
+            if not client.is_japan:
+                # Live power (UK only - Home Mini)
+                try:
+                    live = await client.get_live_power()
+                    if live:
+                        power_str = f"{live.demand_kw:.2f}kW" if live.demand_watts >= 1000 else f"{live.demand_watts}W"
+                        console.print(f"⚡ Power: [bold]{power_str}[/]")
+                except OctopusError:
+                    pass
+
+                # Dispatch (UK only - EV charging)
+                try:
+                    status = await client.get_dispatch_status()
+                    if status.is_dispatching:
+                        console.print(f"🔌 [green]CHARGING[/]")
+                    elif status.next_dispatch:
+                        console.print(f"🔌 Next: {status.next_dispatch.start.strftime('%H:%M')}")
+                except OctopusError:
+                    pass
+
+                # Sessions (UK only - Saving Sessions)
+                try:
+                    sessions = await client.get_saving_sessions()
+                    if sessions:
+                        s = sessions[0]
+                        if s.is_active:
+                            console.print(f"🎁 [green bold]FREE POWER[/] until {s.end.strftime('%H:%M')}")
+                        else:
+                            console.print(f"🎁 Session: {s.start.strftime('%a %H:%M')}")
+                except OctopusError:
+                    pass
 
     run_async(_run())
 
