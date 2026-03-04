@@ -2,111 +2,53 @@ import SwiftUI
 
 // MARK: - Data Models
 
-public struct ChargeSession: Codable, Sendable {
-    var start: String
-    var end: String
-    var kwh: Double
-    var durationMins: Int
-    var cost: Double
-
-    enum CodingKeys: String, CodingKey {
-        case start, end, kwh, cost
-        case durationMins = "duration_mins"
-    }
-}
-
 public struct OctopusData: Codable, Sendable {
     var timestamp: String?
-    var livePowerWatts: Int?
     var rate: Double?
-    var isOffPeak: Bool
-    var rateEndsInSeconds: Int
     var balance: Double
     var balanceIsCredit: Bool
-    var dispatchStatus: String
-    var dispatchEnd: String?
-    var nextDispatchStart: String?
-    var nextDispatchEnd: String?
     var yesterdayKwh: Double
     var yesterdayCost: Double
     var todayKwh: Double
     var todayCost: Double
     var hourlyUsage: [Double]
-    var liveHistory: [Int]
     var tariffName: String?
     var standingCharge: Double
-    var hasSavingSession: Bool
-    var savingSessionStart: String?
-    var savingSessionEnd: String?
-    var savingSessionActive: Bool
     var error: String?
     var response: String?
-    // New computed fields
-    var offPeakStart: String?
-    var offPeakEnd: String?
-    var offPeakPercentage: Double
     var monthlyProjection: Double
     var peakRate: Double?
-    var offPeakRate: Double?
-    var chargerProvider: String?  // e.g., "HYPERVOLT", "OHME", "TESLA"
-    var chargeHistory: [ChargeSession]
     var halfHourlyUsage: [Double]  // 48 slots for last 24h
     var dataDateLatest: String?   // Actual date of "today" data
     var dataDatePrevious: String? // Actual date of "yesterday" data
 
     enum CodingKeys: String, CodingKey {
         case timestamp, rate, balance, error, response
-        case livePowerWatts = "live_power_watts"
-        case isOffPeak = "is_off_peak"
-        case rateEndsInSeconds = "rate_ends_in_seconds"
         case balanceIsCredit = "balance_is_credit"
-        case dispatchStatus = "dispatch_status"
-        case dispatchEnd = "dispatch_end"
-        case nextDispatchStart = "next_dispatch_start"
-        case nextDispatchEnd = "next_dispatch_end"
         case yesterdayKwh = "yesterday_kwh"
         case yesterdayCost = "yesterday_cost"
         case todayKwh = "today_kwh"
         case todayCost = "today_cost"
         case hourlyUsage = "hourly_usage"
-        case liveHistory = "live_history"
         case tariffName = "tariff_name"
         case standingCharge = "standing_charge"
-        case hasSavingSession = "has_saving_session"
-        case savingSessionStart = "saving_session_start"
-        case savingSessionEnd = "saving_session_end"
-        case savingSessionActive = "saving_session_active"
-        case offPeakStart = "off_peak_start"
-        case offPeakEnd = "off_peak_end"
-        case offPeakPercentage = "off_peak_percentage"
         case monthlyProjection = "monthly_projection"
         case peakRate = "peak_rate"
-        case offPeakRate = "off_peak_rate"
-        case chargerProvider = "charger_provider"
-        case chargeHistory = "charge_history"
         case halfHourlyUsage = "half_hourly_usage"
         case dataDateLatest = "data_date_latest"
         case dataDatePrevious = "data_date_previous"
     }
 
     init() {
-        isOffPeak = false
-        rateEndsInSeconds = 0
         balance = 0
         balanceIsCredit = false
-        dispatchStatus = "none"
         yesterdayKwh = 0
         yesterdayCost = 0
         todayKwh = 0
         todayCost = 0
         hourlyUsage = []
-        liveHistory = []
         standingCharge = 0
-        hasSavingSession = false
-        savingSessionActive = false
-        offPeakPercentage = 0
         monthlyProjection = 0
-        chargeHistory = []
         halfHourlyUsage = []
     }
 }
@@ -121,8 +63,7 @@ public enum UsageDisplayMode: String, CaseIterable, Identifiable {
 }
 
 public enum MenuBarDisplayMode: String, CaseIterable, Identifiable {
-    case auto = "Auto"           // Power > Rate > Icon
-    case power = "Power"         // Always show power (or icon if unavailable)
+    case auto = "Auto"           // Rate > Icon
     case rate = "Rate"           // Always show rate (or icon if unavailable)
     case iconOnly = "Icon Only"  // Just the ⚡ icon
     case octopus = "Octopus"     // 🐙 emoji
@@ -131,8 +72,7 @@ public enum MenuBarDisplayMode: String, CaseIterable, Identifiable {
 
     public var description: String {
         switch self {
-        case .auto: return "Power → Rate → Icon"
-        case .power: return "Live power usage"
+        case .auto: return "Rate → Icon"
         case .rate: return "Current rate"
         case .iconOnly: return "Minimal ⚡"
         case .octopus: return "🐙"
@@ -157,42 +97,24 @@ public class AppState: ObservableObject {
     private var refreshTimer: Timer?
 
     public var menuBarTitle: String {
-        // Show charging icon when car is dispatching (UK only, hidden for Japan)
-        let isCharging = false  // JAPAN: disable charging indicator
-
         switch displayMode {
         case .iconOnly:
-            return isCharging ? "🔌" : "⚡"
+            return "⚡"
 
         case .octopus:
-            return isCharging ? "🔌" : "🐙"
-
-        case .power:
-            let prefix = isCharging ? "🔌 " : ""
-            if let watts = data.livePowerWatts {
-                let power = watts >= 1000 ? String(format: "%.1fkW", Double(watts)/1000) : "\(watts)W"
-                return prefix + power
-            }
-            return isCharging ? "🔌" : "⚡"
+            return "🐙"
 
         case .rate:
-            let prefix = isCharging ? "🔌 " : ""
             if let rate = data.rate {
-                return prefix + String(format: "¥%.0f", rate)
+                return String(format: "¥%.0f", rate)
             }
-            return isCharging ? "🔌" : "⚡"
+            return "⚡"
 
         case .auto:
-            let prefix = isCharging ? "🔌 " : ""
-            // Priority: live power > rate > fallback icon
-            if let watts = data.livePowerWatts {
-                let power = watts >= 1000 ? String(format: "%.1fkW", Double(watts)/1000) : "\(watts)W"
-                return prefix + power
-            }
             if let rate = data.rate {
-                return prefix + String(format: "¥%.0f", rate)
+                return String(format: "¥%.0f", rate)
             }
-            return isCharging ? "🔌" : "⚡"
+            return "⚡"
         }
     }
 
@@ -457,14 +379,6 @@ public struct MenuBarView: View {
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(spacing: 8) {
                         usageCard
-                        // JAPAN: EV charging not available - hiding card
-                        // if state.data.dispatchStatus != "none" {
-                        //     chargingCard
-                        // }
-                        // JAPAN: Saving sessions not available - hiding card
-                        // if state.data.savingSessionActive || state.data.hasSavingSession {
-                        //     savingSessionCard
-                        // }
                         rateCard
                         insightsCard
                         aiCard
@@ -485,28 +399,16 @@ public struct MenuBarView: View {
     private var heroSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top) {
-                // Live power or rate
+                // Rate display
                 VStack(alignment: .leading, spacing: 2) {
-                    if let watts = state.data.livePowerWatts {
+                    if let rate = state.data.rate {
                         HStack(spacing: 4) {
-                            Image(systemName: "bolt.fill")
+                            Image(systemName: "sun.max.fill")
                                 .foregroundColor(.orange)
-                            Text(formatPower(watts))
-                                .font(.system(size: 22, weight: .semibold, design: .rounded))
-                        }
-                        if let rate = state.data.rate {
-                            Text("\(formatCostPerHour(watts, rate: rate))")
-                                .font(.system(size: 11))
-                                .foregroundColor(.secondary)
-                        }
-                    } else if let rate = state.data.rate {
-                        HStack(spacing: 4) {
-                            Image(systemName: state.data.isOffPeak ? "moon.fill" : "sun.max.fill")
-                                .foregroundColor(state.data.isOffPeak ? .cyan : .orange)
                             Text(String(format: "¥%.1f", rate))
                                 .font(.system(size: 22, weight: .semibold, design: .rounded))
                         }
-                        Text(state.data.isOffPeak ? "Off-peak rate" : "Peak rate")
+                        Text("Rate per kWh")
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
                     }
@@ -525,32 +427,15 @@ public struct MenuBarView: View {
                 }
             }
 
-            // Rate progress bar
-            VStack(alignment: .leading, spacing: 4) {
-                RateProgressBar(
-                    progress: calculateRateProgress(),
-                    isOffPeak: state.data.isOffPeak
-                )
-
-                HStack {
-                    Text(String(format: "¥%.1f", state.data.rate ?? 0))
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundColor(state.data.isOffPeak ? .cyan : .orange)
-
-                    Image(systemName: "arrow.right")
-                        .font(.system(size: 8))
-                        .foregroundColor(.secondary)
-
-                    Text(String(format: "¥%.1f", state.data.isOffPeak ? (state.data.peakRate ?? 0) : (state.data.offPeakRate ?? 0)))
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundColor(.secondary)
-
-                    Spacer()
-
-                    Text("in \(formatTimeRemaining(state.data.rateEndsInSeconds))")
-                        .font(.system(size: 9))
-                        .foregroundColor(.secondary)
-                }
+            // Standing charge
+            HStack {
+                Text(String(format: "¥%.1f", state.data.rate ?? 0))
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(.orange)
+                Spacer()
+                Text(String(format: "Standing: ¥%.0f/day", state.data.standingCharge))
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary)
             }
         }
         .padding(12)
@@ -562,36 +447,17 @@ public struct MenuBarView: View {
     private var rateCard: some View {
         CardView(icon: "chart.bar.fill", title: "RATES") {
             VStack(alignment: .leading, spacing: 6) {
-                // Peak rate row
+                // Rate row
                 HStack {
                     Circle()
-                        .fill(!state.data.isOffPeak ? Color.orange : Color.secondary.opacity(0.3))
+                        .fill(Color.orange)
                         .frame(width: 6, height: 6)
-                    Text("Peak")
+                    Text("Rate")
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
                     Spacer()
-                    Text(String(format: "¥%.1f", state.data.peakRate ?? state.data.rate ?? 0))
+                    Text(String(format: "¥%.1f/kWh", state.data.peakRate ?? state.data.rate ?? 0))
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    Text("05:30–23:30")
-                        .font(.system(size: 9))
-                        .foregroundColor(.secondary)
-                }
-
-                // Off-peak rate row
-                HStack {
-                    Circle()
-                        .fill(state.data.isOffPeak ? Color.cyan : Color.secondary.opacity(0.3))
-                        .frame(width: 6, height: 6)
-                    Text("Off-peak")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                    Spacer()
-                    Text(String(format: "¥%.1f", state.data.offPeakRate ?? 7.0))
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    Text("23:30–05:30")
-                        .font(.system(size: 9))
-                        .foregroundColor(.secondary)
                 }
 
                 // Standing charge
@@ -609,124 +475,6 @@ public struct MenuBarView: View {
         }
     }
 
-    // MARK: - Charging Card
-
-    private var chargingCard: some View {
-        let isCharging = state.data.dispatchStatus == "charging"
-        let goldColor = Color(red: 1.0, green: 0.84, blue: 0.0)
-        let providerName = state.data.chargerProvider ?? "EV"
-
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 4) {
-                Image(systemName: "ev.charger.fill")
-                    .foregroundColor(isCharging ? goldColor : .secondary)
-                Text("SMART CHARGING")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(isCharging ? goldColor : .secondary)
-                if let provider = state.data.chargerProvider {
-                    Text("· \(provider)")
-                        .font(.system(size: 9))
-                        .foregroundColor(.secondary)
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                if isCharging {
-                    HStack {
-                        HStack(spacing: 4) {
-                            Circle()
-                                .fill(goldColor)
-                                .frame(width: 6, height: 6)
-                            Text("Charging via \(providerName)")
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundColor(goldColor)
-                        }
-                        Spacer()
-                        Text("until \(formatTime(state.data.dispatchEnd))")
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary)
-                    }
-
-                    GeometryReader { geo in
-                        ZStack(alignment: .leading) {
-                            RoundedRectangle(cornerRadius: 2)
-                                .fill(Color.secondary.opacity(0.15))
-                            RoundedRectangle(cornerRadius: 2)
-                                .fill(goldColor)
-                                .frame(width: geo.size.width * 0.6)
-                        }
-                    }
-                    .frame(height: 4)
-                } else if let start = state.data.nextDispatchStart {
-                    HStack {
-                        Text("Scheduled")
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        Text("\(formatTime(start)) → \(formatTime(state.data.nextDispatchEnd))")
-                            .font(.system(size: 11, design: .monospaced))
-                    }
-                }
-
-                // Charge history
-                if !state.data.chargeHistory.isEmpty {
-                    Divider()
-                        .padding(.vertical, 2)
-
-                    Text("Recent Sessions")
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundColor(.secondary)
-
-                    ForEach(state.data.chargeHistory.prefix(3), id: \.start) { session in
-                        HStack {
-                            Text(formatSessionDate(session.start))
-                                .font(.system(size: 10))
-                                .foregroundColor(.secondary)
-                            Spacer()
-                            Text(String(format: "%.1f kWh", session.kwh))
-                                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                            Text(String(format: "£%.2f", session.cost))
-                                .font(.system(size: 9))
-                                .foregroundColor(.green)
-                            Text(formatDuration(session.durationMins))
-                                .font(.system(size: 9))
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                }
-            }
-        }
-        .padding(10)
-        .background(isCharging ? goldColor.opacity(0.08) : Color.primary.opacity(0.04))
-        .cornerRadius(8)
-        .padding(.horizontal, 10)
-    }
-
-    // MARK: - Saving Session Card
-
-    private var savingSessionCard: some View {
-        CardView(icon: "bolt.badge.clock.fill", title: "SAVING SESSION") {
-            HStack {
-                if state.data.savingSessionActive {
-                    Text("LIVE")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(.purple)
-                    Spacer()
-                    Text("ends \(formatTime(state.data.savingSessionEnd))")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                } else if let start = state.data.savingSessionStart {
-                    Text("Upcoming")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                    Spacer()
-                    Text(formatTime(start))
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundColor(.purple)
-                }
-            }
-        }
-    }
 
     // MARK: - Usage Card
 
@@ -845,16 +593,6 @@ public struct MenuBarView: View {
                 .foregroundColor(.secondary)
 
             VStack(alignment: .leading, spacing: 6) {
-                // Off-peak percentage
-                if state.data.offPeakPercentage > 0 {
-                    HStack(spacing: 4) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 10))
-                            .foregroundColor(.green)
-                        Text("\(Int(state.data.offPeakPercentage))% of usage at off-peak rates")
-                            .font(.system(size: 11))
-                    }
-                }
 
                 // Monthly projection
                 if state.data.monthlyProjection > 0 {

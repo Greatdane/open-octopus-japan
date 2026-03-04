@@ -1,4 +1,4 @@
-"""Command-line interface for Open Octopus."""
+"""Command-line interface for Open Octopus Japan."""
 
 import asyncio
 import os
@@ -21,7 +21,7 @@ from .client import OctopusClient, OctopusError
 
 app = typer.Typer(
     name="octopus",
-    help="Open Octopus - CLI for Octopus Energy API",
+    help="Open Octopus Japan - CLI for Octopus Energy Japan API",
     no_args_is_help=True
 )
 console = Console()
@@ -39,10 +39,8 @@ def load_env():
                 if "=" in line:
                     key, value = line.split("=", 1)
                     key = key.strip()
-                    # Handle 'export ' prefix
                     if key.startswith("export "):
                         key = key[len("export "):].strip()
-                    # Strip quotes from value
                     value = value.strip().strip("'").strip('"')
                     os.environ[key] = value
 
@@ -50,49 +48,23 @@ def load_env():
 def get_client() -> OctopusClient:
     """Create client from environment variables."""
     load_env()
-    # Check for Japan credentials first (preferred)
     email = os.environ.get("OCTOPUS_EMAIL")
     password = os.environ.get("OCTOPUS_PASSWORD")
-    account = os.environ.get("OCTOPUS_ACCOUNT")  # Optional for Japan (auto-discovered)
-    region = os.environ.get("OCTOPUS_REGION", "japan").lower()
+    account = os.environ.get("OCTOPUS_ACCOUNT")
 
     if email and password:
-        # Japan mode: email/password auth
-        return OctopusClient(
-            email=email,
-            password=password,
-            account=account,
-            region="japan"
-        )
+        return OctopusClient(email=email, password=password, account=account)
 
-    # Fall back to UK mode: API key auth
-    api_key = os.environ.get("OCTOPUS_API_KEY")
-    mpan = os.environ.get("OCTOPUS_MPAN")
-    meter_serial = os.environ.get("OCTOPUS_METER_SERIAL")
-
-    if api_key and account:
-        return OctopusClient(
-            api_key=api_key,
-            account=account,
-            mpan=mpan,
-            meter_serial=meter_serial,
-            region="uk"
-        )
-
-    # No valid credentials found
     console.print("[red]Error:[/] No valid credentials found")
-    console.print("\n[bold]For Octopus Energy Japan:[/]")
-    console.print("  export OCTOPUS_EMAIL='your-email@example.com'")
-    console.print("  export OCTOPUS_PASSWORD='your-password'")
-    console.print("\n[bold]For Octopus Energy UK:[/]")
-    console.print("  export OCTOPUS_API_KEY='sk_live_xxx'")
-    console.print("  export OCTOPUS_ACCOUNT='A-XXXXXXXX'")
+    console.print("\n[bold]Set credentials in ~/.octopus.env:[/]")
+    console.print("  OCTOPUS_EMAIL=your-email@example.com")
+    console.print("  OCTOPUS_PASSWORD=your-password")
     raise typer.Exit(1)
 
 
 def run_async(coro):
     """Run an async function."""
-    return asyncio.run(coro)
+    asyncio.run(coro)
 
 
 # -----------------------------------------------------------------------------
@@ -106,152 +78,18 @@ def account():
         async with get_client() as client:
             acc = await client.get_account()
 
-            # Format balance based on region
-            if client.is_japan:
-                balance_color = "green" if acc.balance < 0 else "yellow"
-                balance_text = f"¥{abs(acc.balance):,.0f} {'credit' if acc.balance < 0 else 'owed'}"
-                currency_symbol = "¥"
-            else:
-                balance_color = "green" if acc.balance < 0 else "yellow"
-                balance_text = f"£{abs(acc.balance):.2f} {'credit' if acc.balance < 0 else 'owed'}"
-                currency_symbol = "£"
+            balance_text = f"¥{abs(acc.balance):.0f} {'credit' if acc.balance < 0 else 'owed'}"
+            region = "Japan"
 
-            region_label = "Japan" if client.is_japan else "UK"
-            console.print(Panel(
-                f"[bold]{acc.name}[/]\n"
+            info = (
+                f"{acc.name}\n"
                 f"Account: {acc.number}\n"
-                f"Region: {region_label}\n"
+                f"Region: {region}\n"
                 f"Status: {acc.status}\n"
-                f"Balance: [{balance_color}]{balance_text}[/]\n"
-                f"Address: {acc.address}",
-                title="Octopus Energy Account"
-            ))
-
-    run_async(_run())
-
-
-@app.command(hidden=True)  # Hidden: UK-only feature
-def rate():
-    """Show current electricity rate. (UK only)"""
-    async def _run():
-        async with get_client() as client:
-            if client.is_japan:
-                console.print("[yellow]Note:[/] Rate display not yet available for Japan")
-                return
-
-            tariff = await client.get_tariff()
-            if not tariff:
-                console.print("[red]Could not fetch tariff info[/]")
-                return
-
-            current = client.get_current_rate(tariff)
-            time_left = current.period_end - datetime.now()
-            hours = int(time_left.total_seconds()) // 3600
-            mins = (int(time_left.total_seconds()) % 3600) // 60
-
-            if current.is_off_peak:
-                console.print(f"[green]🌙 OFF-PEAK[/] [bold]{current.rate:.1f}p/kWh[/]")
-                console.print(f"   Ends in {hours}h {mins}m (at 05:30)")
-            else:
-                console.print(f"[yellow]☀️ PEAK[/] [bold]{current.rate:.1f}p/kWh[/]")
-                console.print(f"   Cheap rate in {hours}h {mins}m (at 23:30)")
-
-            console.print(f"\n[dim]Tariff: {tariff.name}[/]")
-            console.print(f"[dim]Standing charge: {tariff.standing_charge:.1f}p/day[/]")
-
-    run_async(_run())
-
-
-@app.command(hidden=True)  # Hidden: UK-only feature
-def dispatch():
-    """Show Intelligent Octopus dispatch status. (UK only)"""
-    async def _run():
-        async with get_client() as client:
-            if client.is_japan:
-                console.print("[yellow]Note:[/] Dispatch/EV charging not available for Japan")
-                return
-
-            status = await client.get_dispatch_status()
-
-            if status.is_dispatching and status.current_dispatch:
-                d = status.current_dispatch
-                console.print(f"[green bold]⚡ CHARGING NOW[/]")
-                console.print(f"   Until {d.end.strftime('%H:%M')}")
-            elif status.next_dispatch:
-                d = status.next_dispatch
-                now = datetime.now().astimezone(d.start.tzinfo)
-                delta = d.start - now
-                hours = int(delta.total_seconds()) // 3600
-                mins = (int(delta.total_seconds()) % 3600) // 60
-                console.print(f"[blue]🔌 Next charge:[/] {d.start.strftime('%H:%M')} - {d.end.strftime('%H:%M')}")
-                console.print(f"   In {hours}h {mins}m ({d.duration_minutes}min window)")
-            else:
-                console.print("[dim]🔌 No dispatches scheduled[/]")
-
-            dispatches = await client.get_dispatches()
-            if len(dispatches) > 1:
-                console.print("\n[bold]Upcoming dispatches:[/]")
-                for d in dispatches[:5]:
-                    console.print(f"  • {d.start.strftime('%a %H:%M')} - {d.end.strftime('%H:%M')}")
-
-    run_async(_run())
-
-
-@app.command(hidden=True)  # Hidden: UK-only feature
-def power():
-    """Show live power consumption (requires Home Mini). (UK only)"""
-    async def _run():
-        async with get_client() as client:
-            if client.is_japan:
-                console.print("[yellow]Note:[/] Live power not available for Japan")
-                return
-
-            live = await client.get_live_power()
-
-            if live:
-                watts = live.demand_watts
-                if watts >= 1000:
-                    power_str = f"{watts/1000:.2f} kW"
-                else:
-                    power_str = f"{watts} W"
-
-                console.print(f"[bold]⚡ {power_str}[/]")
-                console.print(f"[dim]   Read at {live.read_at.strftime('%H:%M:%S')}[/]")
-
-                tariff = await client.get_tariff()
-                if tariff:
-                    current = client.get_current_rate(tariff)
-                    cost_per_hour = (watts / 1000) * current.rate
-                    console.print(f"   ~{cost_per_hour:.1f}p/hour at current rate")
-            else:
-                console.print("[yellow]No live power data available[/]")
-                console.print("[dim]This requires a Home Mini paired with your smart meter.[/]")
-
-    run_async(_run())
-
-
-@app.command(hidden=True)  # Hidden: UK-only feature
-def sessions():
-    """Show upcoming Saving Sessions (free electricity). (UK only)"""
-    async def _run():
-        async with get_client() as client:
-            if client.is_japan:
-                console.print("[yellow]Note:[/] Saving Sessions not available for Japan")
-                return
-
-            sessions = await client.get_saving_sessions()
-
-            if not sessions:
-                console.print("[dim]No upcoming Saving Sessions[/]")
-                return
-
-            console.print("[bold]🎁 Saving Sessions[/]\n")
-            for s in sessions:
-                if s.is_active:
-                    console.print(f"[green bold]⚡ ACTIVE NOW[/] until {s.end.strftime('%H:%M')}")
-                else:
-                    console.print(f"📅 {s.start.strftime('%a %d %b %H:%M')} - {s.end.strftime('%H:%M')}")
-                console.print(f"   [dim]{s.reward_per_kwh} Octopoints per kWh saved[/]")
+                f"Balance: {balance_text}\n"
+                f"Address: {acc.address}"
+            )
+            console.print(Panel(info, title="Octopus Energy Account", border_style="cyan"))
 
     run_async(_run())
 
@@ -265,10 +103,7 @@ def usage(days: int = typer.Option(7, "--days", "-d", help="Number of days")):
                 daily = await client.get_daily_usage(days)
             except Exception as e:
                 console.print(f"[red]Error:[/] {e}")
-                if client.is_japan:
-                    console.print("[dim]Note: New accounts may not have meter readings available yet[/]")
-                else:
-                    console.print("[dim]Note: MPAN and meter serial required for consumption data[/]")
+                console.print("[dim]Note: New accounts may not have meter readings available yet[/]")
                 return
 
             if not daily:
@@ -296,15 +131,12 @@ def status():
     """Show complete status overview."""
     async def _run():
         async with get_client() as client:
-            console.print("[bold]🐙 Octopus Energy Status[/]\n")
+            console.print("[bold]🐙 Octopus Energy Japan Status[/]\n")
 
             # Account
             try:
                 acc = await client.get_account()
-                if client.is_japan:
-                    balance_text = f"¥{abs(acc.balance):.0f} {'credit' if acc.balance < 0 else 'owed'}"
-                else:
-                    balance_text = f"£{abs(acc.balance):.2f} {'credit' if acc.balance < 0 else 'owed'}"
+                balance_text = f"¥{abs(acc.balance):.0f} {'credit' if acc.balance < 0 else 'owed'}"
                 console.print(f"💰 Balance: [bold]{balance_text}[/]")
             except OctopusError as e:
                 console.print(f"[red]Account error: {e}[/]")
@@ -314,90 +146,11 @@ def status():
                 tariff = await client.get_tariff()
                 if tariff:
                     current = client.get_current_rate(tariff)
-                    rate_icon = "🌙" if current.is_off_peak else "☀️"
-                    if client.is_japan:
-                        console.print(f"{rate_icon} Rate: [bold]¥{current.rate:.1f}/kWh[/]")
-                    else:
-                        console.print(f"{rate_icon} Rate: [bold]{current.rate:.1f}p/kWh[/]")
+                    console.print(f"☀️ Rate: [bold]¥{current.rate:.1f}/kWh[/]")
             except OctopusError:
                 pass
 
-            if not client.is_japan:
-                # Live power (UK only - Home Mini)
-                try:
-                    live = await client.get_live_power()
-                    if live:
-                        power_str = f"{live.demand_kw:.2f}kW" if live.demand_watts >= 1000 else f"{live.demand_watts}W"
-                        console.print(f"⚡ Power: [bold]{power_str}[/]")
-                except OctopusError:
-                    pass
-
-                # Dispatch (UK only - EV charging)
-                try:
-                    status = await client.get_dispatch_status()
-                    if status.is_dispatching:
-                        console.print(f"🔌 [green]CHARGING[/]")
-                    elif status.next_dispatch:
-                        console.print(f"🔌 Next: {status.next_dispatch.start.strftime('%H:%M')}")
-                except OctopusError:
-                    pass
-
-                # Sessions (UK only - Saving Sessions)
-                try:
-                    sessions = await client.get_saving_sessions()
-                    if sessions:
-                        s = sessions[0]
-                        if s.is_active:
-                            console.print(f"🎁 [green bold]FREE POWER[/] until {s.end.strftime('%H:%M')}")
-                        else:
-                            console.print(f"🎁 Session: {s.start.strftime('%a %H:%M')}")
-                except OctopusError:
-                    pass
-
     run_async(_run())
-
-
-@app.command()
-def watch(interval: int = typer.Option(30, "--interval", "-i", help="Refresh interval in seconds")):
-    """Watch live power consumption (Ctrl+C to stop)."""
-    async def _run():
-        from rich.live import Live
-
-        client = get_client()
-        async with client:
-            with Live(console=console, refresh_per_second=1) as live:
-                while True:
-                    try:
-                        power = await client.get_live_power()
-                        tariff = await client.get_tariff()
-
-                        if power and tariff:
-                            watts = power.demand_watts
-                            current = client.get_current_rate(tariff)
-                            cost_per_hour = (watts / 1000) * current.rate
-
-                            if watts >= 1000:
-                                power_str = f"{watts/1000:.2f} kW"
-                            else:
-                                power_str = f"{watts} W"
-
-                            rate_icon = "🌙" if current.is_off_peak else "☀️"
-                            text = Text()
-                            text.append(f"⚡ {power_str}", style="bold")
-                            text.append(f" │ {rate_icon} {current.rate:.1f}p", style="dim")
-                            text.append(f" │ ~{cost_per_hour:.0f}p/hr", style="dim")
-                            live.update(Panel(text, title=f"Live Power ({power.read_at.strftime('%H:%M:%S')})"))
-                        else:
-                            live.update(Panel("[dim]Waiting for data...[/]"))
-
-                        await asyncio.sleep(interval)
-                    except KeyboardInterrupt:
-                        break
-
-    try:
-        run_async(_run())
-    except KeyboardInterrupt:
-        console.print("\n[dim]Stopped[/]")
 
 
 @app.command()
@@ -410,7 +163,6 @@ def tui(refresh: int = typer.Option(60, "--refresh", "-r", help="Refresh interva
         """Create a sparkline from values."""
         if not values:
             return "─" * width
-        # Normalize to width
         if len(values) > width:
             step = len(values) / width
             values = [values[int(i * step)] for i in range(width)]
@@ -451,18 +203,12 @@ def tui(refresh: int = typer.Option(60, "--refresh", "-r", help="Refresh interva
 
     async def build_dashboard(client: OctopusClient) -> Table:
         """Build the complete dashboard."""
-        # Create main grid
         grid = Table.grid(expand=True)
         grid.add_column(ratio=1)
 
-        # Fetch all data
         acc = None
         tariff = None
         current_rate = None
-        live_power = None
-        dispatch_status = None
-        dispatches = []
-        sessions = []
         daily_usage = {}
         hourly_today = defaultdict(float)
         hourly_yesterday = defaultdict(float)
@@ -476,22 +222,6 @@ def tui(refresh: int = typer.Option(60, "--refresh", "-r", help="Refresh interva
             tariff = await client.get_tariff()
             if tariff:
                 current_rate = client.get_current_rate(tariff)
-        except:
-            pass
-
-        try:
-            live_power = await client.get_live_power()
-        except:
-            pass
-
-        try:
-            dispatch_status = await client.get_dispatch_status()
-            dispatches = await client.get_dispatches()
-        except:
-            pass
-
-        try:
-            sessions = await client.get_saving_sessions()
         except:
             pass
 
@@ -514,7 +244,7 @@ def tui(refresh: int = typer.Option(60, "--refresh", "-r", help="Refresh interva
 
         # === HEADER ===
         header_text = Text()
-        header_text.append("🐙 OPEN OCTOPUS", style="bold cyan")
+        header_text.append("🐙 OPEN OCTOPUS JAPAN", style="bold cyan")
         if acc:
             header_text.append(f"  │  {acc.name}", style="dim")
         header_text.append(f"  │  {datetime.now().strftime('%H:%M:%S')}", style="dim")
@@ -531,7 +261,7 @@ def tui(refresh: int = typer.Option(60, "--refresh", "-r", help="Refresh interva
             balance_color = "green" if is_credit else "yellow"
             balance_text = Text()
             balance_text.append("💰 BALANCE\n", style="bold")
-            balance_text.append(f"£{abs(acc.balance):.2f}", style=f"bold {balance_color}")
+            balance_text.append(f"¥{abs(acc.balance):.0f}", style=f"bold {balance_color}")
             balance_text.append(f" {'credit' if is_credit else 'owed'}", style="dim")
             balance_panel = Panel(balance_text, box=box.ROUNDED, height=5)
         else:
@@ -539,15 +269,11 @@ def tui(refresh: int = typer.Option(60, "--refresh", "-r", help="Refresh interva
 
         # Rate panel
         if current_rate and tariff:
-            time_left = format_time_delta(int((current_rate.period_end - datetime.now()).total_seconds()))
-            rate_color = "cyan" if current_rate.is_off_peak else "yellow"
-            rate_icon = "🌙" if current_rate.is_off_peak else "☀️"
             rate_text = Text()
-            rate_text.append(f"{rate_icon} {'OFF-PEAK' if current_rate.is_off_peak else 'PEAK'} RATE\n", style="bold")
-            rate_text.append(f"{current_rate.rate:.1f}p", style=f"bold {rate_color}")
-            rate_text.append(f"/kWh  │  {time_left} left", style="dim")
-            if tariff.off_peak_rate:
-                rate_text.append(f"\nPeak {tariff.peak_rate:.0f}p → Off {tariff.off_peak_rate:.0f}p", style="dim")
+            rate_text.append("☀️ RATE\n", style="bold")
+            rate_text.append(f"¥{current_rate.rate:.1f}", style="bold yellow")
+            rate_text.append(f"/kWh", style="dim")
+            rate_text.append(f"\nStanding: ¥{tariff.standing_charge:.1f}/day", style="dim")
             rate_panel = Panel(rate_text, box=box.ROUNDED, height=5)
         else:
             rate_panel = Panel("[dim]Rate unavailable[/]", box=box.ROUNDED, height=5)
@@ -555,83 +281,30 @@ def tui(refresh: int = typer.Option(60, "--refresh", "-r", help="Refresh interva
         row1.add_row(balance_panel, rate_panel)
         grid.add_row(row1)
 
-        # === ROW 2: Live Power + Dispatch ===
-        row2 = Table.grid(expand=True)
-        row2.add_column(ratio=1)
-        row2.add_column(ratio=1)
-
-        # Live power panel
-        if live_power:
-            watts = live_power.demand_watts
-            power_str = f"{watts/1000:.2f}kW" if watts >= 1000 else f"{watts}W"
-            power_text = Text()
-            power_text.append("⚡ LIVE POWER\n", style="bold")
-            power_text.append(power_str, style="bold green")
-            if current_rate:
-                cost_per_hr = (watts / 1000) * current_rate.rate
-                power_text.append(f"  (~{cost_per_hr:.0f}p/hr)", style="dim")
-            power_text.append(f"\n[dim]Updated {live_power.read_at.strftime('%H:%M:%S')}[/]")
-            power_panel = Panel(power_text, box=box.ROUNDED, height=5)
-        else:
-            power_panel = Panel("[dim]⚡ No live power data\nRequires Home Mini[/]", box=box.ROUNDED, height=5)
-
-        # Dispatch panel
-        if dispatch_status:
-            dispatch_text = Text()
-            if dispatch_status.is_dispatching and dispatch_status.current_dispatch:
-                d = dispatch_status.current_dispatch
-                dispatch_text.append("🔌 CHARGING NOW\n", style="bold green")
-                dispatch_text.append(f"Until {d.end.strftime('%H:%M')}", style="bold")
-            elif dispatch_status.next_dispatch:
-                d = dispatch_status.next_dispatch
-                dispatch_text.append("🔌 NEXT CHARGE\n", style="bold")
-                dispatch_text.append(f"{d.start.strftime('%H:%M')} - {d.end.strftime('%H:%M')}", style="bold cyan")
-                now = datetime.now().astimezone(d.start.tzinfo)
-                delta = d.start - now
-                dispatch_text.append(f"\n[dim]In {format_time_delta(int(delta.total_seconds()))}[/]")
-            else:
-                dispatch_text.append("🔌 DISPATCH\n", style="bold")
-                dispatch_text.append("[dim]No charges scheduled[/]")
-            dispatch_panel = Panel(dispatch_text, box=box.ROUNDED, height=5)
-        else:
-            dispatch_panel = Panel("[dim]🔌 Dispatch unavailable[/]", box=box.ROUNDED, height=5)
-
-        row2.add_row(power_panel, dispatch_panel)
-        grid.add_row(row2)
-
-        # === ROW 3: Today's Usage by Hour ===
+        # === ROW 2: Today's Usage by Hour ===
         today_str = datetime.now().strftime("%Y-%m-%d")
         today_kwh = sum(hourly_today.values())
         today_text = Text()
         today_text.append("📊 TODAY'S USAGE BY HOUR\n", style="bold")
 
         if hourly_today:
-            # Build hourly bars
             max_hourly = max(hourly_today.values()) if hourly_today else 1
-            hour_labels = ""
-            hour_bars = ""
-            current_hour = datetime.now().hour
-
             for h in range(24):
                 kwh = hourly_today.get(h, 0)
-                # Color: cyan for off-peak (0-5, 23), yellow for peak
-                is_off_peak = h <= 5 or h == 23
-                color = "cyan" if is_off_peak else "yellow"
                 if kwh > 0:
                     bar_height = int((kwh / max_hourly) * 7)
                     bar_height = max(1, min(7, bar_height))
-                    hour_bars += f"[{color}]{SPARK_BLOCKS[bar_height]}[/]"
+                    today_text.append(SPARK_BLOCKS[bar_height], style="yellow")
                 else:
-                    hour_bars += "[dim]▁[/]"
+                    today_text.append("▁", style="dim")
 
-            today_text.append(f"{hour_bars}\n")
-            today_text.append(f"0    6    12   18   24  │  Total: {today_kwh:.1f} kWh", style="dim")
+            today_text.append(f"\n0    6    12   18   24  │  Total: {today_kwh:.1f} kWh", style="dim")
         else:
             today_text.append("[dim]No usage data yet[/]")
 
         grid.add_row(Panel(today_text, box=box.ROUNDED))
 
-        # === ROW 4: 7-Day Usage Comparison ===
+        # === ROW 3: 7-Day Usage Comparison ===
         if daily_usage:
             week_text = Text()
             week_text.append("📈 7-DAY USAGE\n", style="bold")
@@ -649,51 +322,17 @@ def tui(refresh: int = typer.Option(60, "--refresh", "-r", help="Refresh interva
                 bar = make_bar(kwh, max_daily, 25, "green")
                 week_text.append(f"{day_name} │ {bar} {kwh:5.1f} kWh\n")
 
-            # Add weekly total and average
             total = sum(daily_usage.values())
             avg = total / len(daily_usage) if daily_usage else 0
             week_text.append(f"[dim]Weekly: {total:.1f} kWh  │  Avg: {avg:.1f} kWh/day[/]")
 
             grid.add_row(Panel(week_text, box=box.ROUNDED))
 
-        # === ROW 5: Saving Sessions + Upcoming Dispatches ===
-        row5 = Table.grid(expand=True)
-        row5.add_column(ratio=1)
-        row5.add_column(ratio=1)
-
-        # Saving sessions panel
-        if sessions:
-            session_text = Text()
-            session_text.append("🎁 SAVING SESSIONS\n", style="bold")
-            for s in sessions[:3]:
-                if s.is_active:
-                    session_text.append(f"⚡ ACTIVE until {s.end.strftime('%H:%M')}\n", style="green bold")
-                else:
-                    session_text.append(f"📅 {s.start.strftime('%a %d %b %H:%M')} - {s.end.strftime('%H:%M')}\n")
-                session_text.append(f"   [dim]{s.reward_per_kwh} Octopoints/kWh[/]\n")
-            session_panel = Panel(session_text, box=box.ROUNDED)
-        else:
-            session_panel = Panel("[dim]🎁 No Saving Sessions[/]", box=box.ROUNDED)
-
-        # Upcoming dispatches panel
-        if dispatches:
-            disp_text = Text()
-            disp_text.append("📅 UPCOMING CHARGES\n", style="bold")
-            for d in dispatches[:4]:
-                disp_text.append(f"• {d.start.strftime('%a %H:%M')} - {d.end.strftime('%H:%M')}\n")
-            disp_panel = Panel(disp_text, box=box.ROUNDED)
-        else:
-            disp_panel = Panel("[dim]📅 No scheduled charges[/]", box=box.ROUNDED)
-
-        row5.add_row(session_panel, disp_panel)
-        grid.add_row(row5)
-
         # === FOOTER ===
         footer_text = Text()
         if tariff:
             footer_text.append(f"Tariff: {tariff.name}", style="dim")
-            footer_text.append(f"  │  Standing: {tariff.standing_charge:.1f}p/day", style="dim")
-        footer_text.append(f"  │  [cyan]github.com/abracadabra50/open-octopus[/]", style="dim")
+            footer_text.append(f"  │  Standing: ¥{tariff.standing_charge:.1f}/day", style="dim")
         grid.add_row(Panel(footer_text, box=box.ROUNDED))
 
         return grid

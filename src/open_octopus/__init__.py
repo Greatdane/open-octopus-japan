@@ -1,34 +1,21 @@
 """
-Open Octopus - Modern Python client for the Octopus Energy API.
+Open Octopus Japan - Python client for the Octopus Energy Japan API.
 
-Supports the full GraphQL/Kraken API including:
-- Live power consumption (Home Mini)
-- Intelligent Octopus dispatch slots
-- Saving Sessions / Free Electricity events
+Supports:
 - Account balance and tariff info
+- Half-hourly electricity consumption
 - macOS menu bar app
 - Claude AI agent for natural language queries
 
 Example:
     >>> from open_octopus import OctopusClient
     >>>
-    >>> async with OctopusClient(api_key="sk_live_xxx", account="A-1234") as client:
+    >>> async with OctopusClient(email="user@example.com", password="xxx") as client:
     ...     account = await client.get_account()
-    ...     print(f"Balance: £{account.balance:.2f}")
-    ...
-    ...     power = await client.get_live_power()
-    ...     if power:
-    ...         print(f"Current: {power.demand_kw:.2f} kW")
-
-Natural language queries:
-    >>> from open_octopus import OctopusAgent
-    >>>
-    >>> agent = OctopusAgent()
-    >>> response = await agent.ask("What's my current power usage?")
-    >>> print(response)
+    ...     print(f"Balance: ¥{account.balance:.0f}")
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 from .client import (
     OctopusClient,
@@ -40,17 +27,8 @@ from .client import (
 from .models import (
     Account,
     Consumption,
-    GasConsumption,
     Tariff,
-    GasTariff,
     Rate,
-    Dispatch,
-    DispatchStatus,
-    SavingSession,
-    LivePower,
-    SmartDevice,
-    MeterPoint,
-    GasMeterPoint,
 )
 
 # Optional imports for extras
@@ -72,21 +50,11 @@ __all__ = [
     "AuthenticationError",
     "APIError",
     "ConfigurationError",
-    # Electricity Models
+    # Models
     "Account",
     "Consumption",
     "Tariff",
     "Rate",
-    "Dispatch",
-    "DispatchStatus",
-    "SavingSession",
-    "LivePower",
-    "SmartDevice",
-    "MeterPoint",
-    # Gas Models
-    "GasConsumption",
-    "GasTariff",
-    "GasMeterPoint",
     # Optional
     "OctopusAgent",
     "OctopusMenuBar",
