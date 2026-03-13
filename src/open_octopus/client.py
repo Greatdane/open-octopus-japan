@@ -198,6 +198,9 @@ class OctopusClient:
         """
         Get half-hourly electricity consumption.
 
+        Uses the PropertyType.measurements endpoint with IntervalMeasurementType,
+        which is the correct endpoint for the Japan Kraken API.
+
         Args:
             periods: Number of 30-minute periods (default 48 = 24 hours)
             start: Start datetime (optional, defaults to last 24 hours)
@@ -213,48 +216,81 @@ class OctopusClient:
         if not start:
             start = end - timedelta(minutes=30 * periods)
 
-        data = await self._graphql(
-            """
-            query halfHourlyReadings($accountNumber: String!, $fromDatetime: DateTime, $toDatetime: DateTime) {
-                account(accountNumber: $accountNumber) {
-                    properties {
-                        electricitySupplyPoints {
-                            status
-                            halfHourlyReadings(fromDatetime: $fromDatetime, toDatetime: $toDatetime) {
-                                startAt
-                                value
-                                costEstimate
+        readings = []
+        cursor = None
+        has_next = True
+
+        while has_next:
+            variables = {
+                "account": account_number,
+                "startAt": start.isoformat(),
+                "endAt": end.isoformat()
+            }
+            if cursor:
+                variables["after"] = cursor
+
+            data = await self._graphql(
+                """
+                query getMeasurements($account: String!, $startAt: DateTime, $endAt: DateTime, $after: String) {
+                    account(accountNumber: $account) {
+                        properties {
+                            measurements(
+                                startAt: $startAt,
+                                endAt: $endAt,
+                                first: 500,
+                                after: $after,
+                                utilityFilters: [{electricityFilters: {}}]
+                            ) {
+                                edges {
+                                    node {
+                                        ... on IntervalMeasurementType {
+                                            startAt
+                                            endAt
+                                            value
+                                            unit
+                                        }
+                                    }
+                                    cursor
+                                }
+                                pageInfo {
+                                    hasNextPage
+                                }
                             }
                         }
                     }
                 }
-            }
-            """,
-            {
-                "accountNumber": account_number,
-                "fromDatetime": start.isoformat(),
-                "toDatetime": end.isoformat()
-            }
-        )
+                """,
+                variables
+            )
 
-        readings = []
-        properties = data.get("account", {}).get("properties", [])
-        for prop in properties:
-            for supply_point in prop.get("electricitySupplyPoints", []):
-                if supply_point is None:
-                    continue
-                for r in supply_point.get("halfHourlyReadings", []) or []:
+            if not data or not data.get("account"):
+                break
+
+            properties = data.get("account", {}).get("properties", [])
+            if not properties:
+                break
+
+            for prop in properties:
+                measurements = prop.get("measurements") or {}
+                for edge in measurements.get("edges", []):
+                    node = edge.get("node") or {}
+                    if not node.get("startAt"):
+                        continue
                     try:
-                        start_at = datetime.fromisoformat(r["startAt"].replace("Z", "+00:00"))
-                        end_at = start_at + timedelta(minutes=30)
+                        start_at = datetime.fromisoformat(node["startAt"])
+                        end_at = datetime.fromisoformat(node["endAt"])
                         readings.append(Consumption(
                             start=start_at,
                             end=end_at,
-                            kwh=float(r["value"]),
-                            cost_estimate=float(r.get("costEstimate") or 0)
+                            kwh=float(node["value"]),
+                            cost_estimate=0.0
                         ))
                     except (ValueError, KeyError, TypeError):
                         continue
+                    cursor = edge.get("cursor")
+
+                page_info = measurements.get("pageInfo") or {}
+                has_next = page_info.get("hasNextPage", False)
 
         return sorted(readings, key=lambda c: c.start)
 
