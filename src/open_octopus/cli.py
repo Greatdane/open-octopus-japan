@@ -95,22 +95,39 @@ def account():
 
 
 @app.command()
-def usage(days: int = typer.Option(7, "--days", "-d", help="Number of days")):
+def usage(
+    days: int = typer.Option(7, "--days", "-d", help="Number of days (ignored if --start is set)"),
+    start: Optional[str] = typer.Option(None, "--start", "-s", help="Start date (YYYY-MM-DD)"),
+    end: Optional[str] = typer.Option(None, "--end", "-e", help="End date (YYYY-MM-DD, defaults to today)"),
+):
     """Show daily electricity usage."""
     async def _run():
         async with get_client() as client:
             try:
-                daily = await client.get_daily_usage(days)
+                if start:
+                    from datetime import datetime, timedelta
+                    start_dt = datetime.strptime(start, "%Y-%m-%d")
+                    end_dt = datetime.strptime(end, "%Y-%m-%d") + timedelta(days=1) if end else datetime.now()
+                    consumption = await client.get_consumption(start=start_dt, end=end_dt)
+                    # Aggregate into daily totals
+                    daily: dict[str, float] = {}
+                    for c in consumption:
+                        day = c.start.strftime("%Y-%m-%d")
+                        daily[day] = daily.get(day, 0) + c.kwh
+                    title = f"Usage: {start} to {end or 'today'}"
+                else:
+                    daily = await client.get_daily_usage(days)
+                    title = f"Last {days} Days Usage"
             except Exception as e:
                 console.print(f"[red]Error:[/] {e}")
                 console.print("[dim]Note: New accounts may not have meter readings available yet[/]")
                 return
 
             if not daily:
-                console.print("[dim]No consumption data available yet. Meter readings typically take 24-48 hours to appear.[/]")
+                console.print("[dim]No consumption data available for this period.[/]")
                 return
 
-            table = Table(title=f"Last {days} Days Usage")
+            table = Table(title=title)
             table.add_column("Date", style="cyan")
             table.add_column("kWh", justify="right")
             table.add_column("Graph", justify="left")

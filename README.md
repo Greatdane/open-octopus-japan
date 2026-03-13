@@ -27,7 +27,10 @@
 ### CLI Tools
 ```bash
 octopus account    # Account balance and details
-octopus usage      # Daily consumption data
+octopus usage      # Daily consumption (last 7 days)
+octopus usage -d 30                          # Last 30 days
+octopus usage --start 2026-02-15 --end 2026-03-01  # Date range
+octopus usage --start 2026-02-15             # From date to today
 octopus status     # Quick overview of balance and current rate
 octopus tui        # Interactive terminal dashboard
 ```
