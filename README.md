@@ -2,8 +2,6 @@
 
 > **Unofficial** open-source toolkit for [Octopus Energy Japan](https://octopusenergy.co.jp) customers.
 > Not affiliated with or endorsed by Octopus Energy.
-> 
-> *Adapted from the original UK version. Some UK-only features are hidden.*
 
 <img src="docs/menubar-screenshot.png" width="300" alt="Open Octopus Menu Bar App">
 
@@ -15,38 +13,30 @@
 | **CLI Tools** | Terminal commands for quick access to your data |
 | **TUI** | Interactive terminal dashboard |
 | **AI Assistant** | Ask questions about your energy usage |
-| **Alerts** | Notifications for rate changes, charging, sessions *(coming soon)* |
+| **Alerts** | Notifications for rate changes *(coming soon)* |
 
 ## Features
 
 ### Menu Bar App (macOS)
-- Live rate display with countdown to off-peak
-- Smart charging status with golden indicator when EV is charging
-- Usage sparkline with off-peak hour highlighting
-- Rate comparison (peak vs off-peak savings)
+- Live electricity rate display
+- Account balance status
+- Quick usage overview (today vs yesterday)
 - Monthly cost projection
 - AI chat with quick action buttons
 
 ### CLI Tools
 ```bash
-octopus rate       # Current electricity rate
-octopus account    # Account balance
-octopus usage      # Consumption data
-octopus dispatch   # EV charging schedule
-octopus power      # Live power (if available)
-octopus sessions   # Saving sessions
+octopus account    # Account balance and details
+octopus usage      # Daily consumption data
+octopus status     # Quick overview of balance and current rate
+octopus tui        # Interactive terminal dashboard
 ```
 
-### TUI (Terminal UI)
+### AI Assistant (octopus-ask)
 ```bash
-octopus tui        # Interactive dashboard
-```
-
-### AI Assistant
-```bash
-octopus-ask "What's the best time to run my dishwasher?"
-octopus-ask "How much did I spend this week?"
-octopus-ask "Compare my usage to last month"
+octopus-ask "What's my balance?"
+octopus-ask "How much did I use yesterday?"
+octopus-ask "What's my electricity rate?"
 ```
 
 ## Installation
@@ -57,7 +47,7 @@ pip install open-octopus
 
 ### Configuration
 
-Set your Octopus Energy Japan credentials:
+Set your Octopus Energy Japan credentials using email and password:
 ```bash
 export OCTOPUS_EMAIL="your-email@example.com"
 export OCTOPUS_PASSWORD="your-password"
@@ -74,8 +64,8 @@ ANTHROPIC_API_KEY=sk-ant-xxxxx
 ### Menu Bar App (macOS)
 
 ```bash
-git clone https://github.com/abracadabra50/open-octopus.git
-cd open-octopus
+git clone https://github.com/Greatdane/open-octopus-japan.git
+cd open-octopus-japan
 xcodebuild -workspace OctopusMenuBar.xcworkspace -scheme OctopusMenuBar build
 open ~/Library/Developer/Xcode/DerivedData/OctopusMenuBar-*/Build/Products/Debug/OctopusMenuBar.app
 ```
@@ -84,17 +74,14 @@ open ~/Library/Developer/Xcode/DerivedData/OctopusMenuBar-*/Build/Products/Debug
 
 - グリーンオクトパス (Green Octopus)
 - シンプルオクトパス (Simple Octopus)
-- Other Japan tariffs
+- Other Japan electricity tariffs
 
 ## Roadmap
 
 - [ ] **Alerts** - macOS notifications for:
-  - Off-peak rate starting/ending
-  - EV dispatch starting/ending
-  - Saving sessions
   - Low balance warning
+  - Usage breaking previous records
 - [ ] **Widgets** - macOS desktop widgets
-- [ ] **Gas support** - Full gas meter integration
 - [ ] **Historical charts** - Weekly/monthly usage graphs
 
 ## License
