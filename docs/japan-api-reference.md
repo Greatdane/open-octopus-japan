@@ -179,9 +179,9 @@ query($accountNumber: String!, $fromDatetime: DateTime, $toDatetime: DateTime) {
 query($postcode: String!) {
   postalAreas(postcode: $postcode) {
     postcode    # "100-0001"
-    prefecture  # "京都府"
-    city        # "京都市中京区"
-    area        # "西ノ京..."
+    prefecture  # "東京都"
+    city        # "千代田区"
+    area        # "千代田"
   }
 }
 ```
