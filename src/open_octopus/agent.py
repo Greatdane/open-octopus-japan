@@ -16,17 +16,14 @@ Or as a library:
     response = await agent.ask("What's my balance?")
 """
 
-import os
-import json
 import asyncio
-from datetime import datetime
-from typing import Optional, Any
+import json
+import os
+from typing import Optional
 
 from anthropic import Anthropic
 
 from .client import OctopusClient
-from .models import Account, Tariff, Rate
-
 
 # Tool definitions for Claude
 OCTOPUS_TOOLS = [

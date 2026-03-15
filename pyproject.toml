@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "open-octopus"
-version = "0.3.0"
-description = "Modern async Python client for the Octopus Energy GraphQL API. Live power, Intelligent dispatches, Saving Sessions & more."
+version = "0.4.0"
+description = "Async Python client for the Octopus Energy Japan GraphQL API. Consumption tracking, tariff info, CLI dashboard & AI agent."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
@@ -14,14 +14,13 @@ authors = [
 ]
 keywords = [
     "octopus-energy",
+    "octopus-energy-japan",
     "energy",
-    "smart-meter",
     "electricity",
     "api-client",
     "async",
     "graphql",
-    "home-mini",
-    "intelligent-octopus"
+    "kraken",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -66,14 +65,14 @@ dev = [
 [project.scripts]
 octopus = "open_octopus.cli:main"
 octopus-ask = "open_octopus.agent:main"
-octopus-menubar = "open_octopus.menubar_native:main"
+octopus-menubar = "open_octopus.menubar:main"
 octopus-server = "open_octopus.menubar_server:main"
 
 [project.urls]
-Homepage = "https://github.com/abracadabra50/open-octopus"
-Documentation = "https://github.com/abracadabra50/open-octopus#readme"
-Repository = "https://github.com/abracadabra50/open-octopus"
-Issues = "https://github.com/abracadabra50/open-octopus/issues"
+Homepage = "https://github.com/abracadabra50/open-octopus-japan"
+Documentation = "https://github.com/abracadabra50/open-octopus-japan#readme"
+Repository = "https://github.com/abracadabra50/open-octopus-japan"
+Issues = "https://github.com/abracadabra50/open-octopus-japan/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/open_octopus"]
@@ -81,6 +80,8 @@ packages = ["src/open_octopus"]
 [tool.ruff]
 target-version = "py310"
 line-length = 100
+
+[tool.ruff.lint]
 select = [
     "E",  # pycodestyle errors
     "W",  # pycodestyle warnings

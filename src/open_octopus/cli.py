@@ -2,20 +2,18 @@
 
 import asyncio
 import os
+from collections import defaultdict
+from collections.abc import Coroutine
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Any, Optional
 
 import typer
-from rich.console import Console
-from rich.table import Table
-from rich.panel import Panel
-from rich.text import Text
-from rich.layout import Layout
-from rich.live import Live
-from rich.columns import Columns
-from rich.progress import Progress, BarColumn, TextColumn
 from rich import box
-from collections import defaultdict
+from rich.console import Console
+from rich.live import Live
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
 
 from .client import OctopusClient, OctopusError
 
@@ -27,7 +25,7 @@ app = typer.Typer(
 console = Console()
 
 
-def load_env():
+def load_env() -> None:
     """Load ~/.octopus.env into environment variables."""
     env_file = os.path.expanduser("~/.octopus.env")
     if os.path.exists(env_file):
@@ -62,7 +60,7 @@ def get_client() -> OctopusClient:
     raise typer.Exit(1)
 
 
-def run_async(coro):
+def run_async(coro: Coroutine[Any, Any, None]) -> None:
     """Run an async function."""
     asyncio.run(coro)
 
@@ -72,9 +70,9 @@ def run_async(coro):
 # -----------------------------------------------------------------------------
 
 @app.command()
-def account():
+def account() -> None:
     """Show account balance and info."""
-    async def _run():
+    async def _run() -> None:
         async with get_client() as client:
             acc = await client.get_account()
 
@@ -99,44 +97,56 @@ def usage(
     days: int = typer.Option(7, "--days", "-d", help="Number of days (ignored if --start is set)"),
     start: Optional[str] = typer.Option(None, "--start", "-s", help="Start date (YYYY-MM-DD)"),
     end: Optional[str] = typer.Option(None, "--end", "-e", help="End date (YYYY-MM-DD, defaults to today)"),
-):
+) -> None:
     """Show daily electricity usage."""
-    async def _run():
+    async def _run() -> None:
         async with get_client() as client:
             try:
                 if start:
-                    from datetime import datetime, timedelta
                     start_dt = datetime.strptime(start, "%Y-%m-%d")
                     end_dt = datetime.strptime(end, "%Y-%m-%d") + timedelta(days=1) if end else datetime.now()
-                    consumption = await client.get_consumption(start=start_dt, end=end_dt)
-                    # Aggregate into daily totals
-                    daily: dict[str, float] = {}
-                    for c in consumption:
-                        day = c.start.strftime("%Y-%m-%d")
-                        daily[day] = daily.get(day, 0) + c.kwh
+                    all_readings = await client.get_consumption(start=start_dt, end=end_dt)
                     title = f"Usage: {start} to {end or 'today'}"
                 else:
-                    daily = await client.get_daily_usage(days)
+                    all_readings = await client.get_consumption(periods=days * 48)
                     title = f"Last {days} Days Usage"
             except Exception as e:
                 console.print(f"[red]Error:[/] {e}")
                 console.print("[dim]Note: New accounts may not have meter readings available yet[/]")
                 return
 
+            # Aggregate into daily totals and costs from a single fetch
+            daily: dict[str, float] = {}
+            daily_cost: dict[str, float] = {}
+            for c in all_readings:
+                day = c.start.strftime("%Y-%m-%d")
+                daily[day] = daily.get(day, 0) + c.kwh
+                if c.cost_estimate is not None:
+                    daily_cost[day] = daily_cost.get(day, 0) + c.cost_estimate
+
             if not daily:
                 console.print("[dim]No consumption data available for this period.[/]")
                 return
 
+            has_costs = bool(daily_cost)
+
             table = Table(title=title)
             table.add_column("Date", style="cyan")
             table.add_column("kWh", justify="right")
+            if has_costs:
+                table.add_column("Est. Cost", justify="right")
             table.add_column("Graph", justify="left")
 
             max_kwh = max(daily.values()) if daily else 1
             for date, kwh in sorted(daily.items(), reverse=True):
                 bars = int((kwh / max_kwh) * 20)
                 bar_str = "█" * bars
-                table.add_row(date, f"{kwh:.1f}", f"[green]{bar_str}[/]")
+                row = [date, f"{kwh:.1f}"]
+                if has_costs:
+                    cost = daily_cost.get(date)
+                    row.append(f"¥{cost:.0f}" if cost is not None else "—")
+                row.append(f"[green]{bar_str}[/]")
+                table.add_row(*row)
 
             console.print(table)
 
@@ -144,9 +154,9 @@ def usage(
 
 
 @app.command()
-def status():
+def status() -> None:
     """Show complete status overview."""
-    async def _run():
+    async def _run() -> None:
         async with get_client() as client:
             console.print("[bold]🐙 Octopus Energy Japan Status[/]\n")
 
@@ -171,7 +181,7 @@ def status():
 
 
 @app.command()
-def tui(refresh: int = typer.Option(60, "--refresh", "-r", help="Refresh interval in seconds")):
+def tui(refresh: int = typer.Option(60, "--refresh", "-r", help="Refresh interval in seconds")) -> None:
     """Interactive terminal dashboard with live updates."""
 
     SPARK_BLOCKS = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
@@ -227,19 +237,19 @@ def tui(refresh: int = typer.Option(60, "--refresh", "-r", help="Refresh interva
         tariff = None
         current_rate = None
         daily_usage = {}
-        hourly_today = defaultdict(float)
-        hourly_yesterday = defaultdict(float)
+        hourly_today: defaultdict[int, float] = defaultdict(float)
+        hourly_yesterday: defaultdict[int, float] = defaultdict(float)
 
         try:
             acc = await client.get_account()
-        except:
+        except Exception:
             pass
 
         try:
             tariff = await client.get_tariff()
             if tariff:
                 current_rate = client.get_current_rate(tariff)
-        except:
+        except Exception:
             pass
 
         try:
@@ -256,7 +266,7 @@ def tui(refresh: int = typer.Option(60, "--refresh", "-r", help="Refresh interva
                     hourly_today[hour] += c.kwh
                 elif day == yesterday:
                     hourly_yesterday[hour] += c.kwh
-        except:
+        except Exception:
             pass
 
         # === HEADER ===
@@ -289,7 +299,7 @@ def tui(refresh: int = typer.Option(60, "--refresh", "-r", help="Refresh interva
             rate_text = Text()
             rate_text.append("☀️ RATE\n", style="bold")
             rate_text.append(f"¥{current_rate.rate:.1f}", style="bold yellow")
-            rate_text.append(f"/kWh", style="dim")
+            rate_text.append("/kWh", style="dim")
             rate_text.append(f"\nStanding: ¥{tariff.standing_charge:.1f}/day", style="dim")
             rate_panel = Panel(rate_text, box=box.ROUNDED, height=5)
         else:
@@ -299,7 +309,6 @@ def tui(refresh: int = typer.Option(60, "--refresh", "-r", help="Refresh interva
         grid.add_row(row1)
 
         # === ROW 2: Today's Usage by Hour ===
-        today_str = datetime.now().strftime("%Y-%m-%d")
         today_kwh = sum(hourly_today.values())
         today_text = Text()
         today_text.append("📊 TODAY'S USAGE BY HOUR\n", style="bold")
@@ -333,7 +342,7 @@ def tui(refresh: int = typer.Option(60, "--refresh", "-r", help="Refresh interva
                 try:
                     dt = datetime.strptime(date_str, "%Y-%m-%d")
                     day_name = dt.strftime("%a")
-                except:
+                except (ValueError, TypeError):
                     day_name = date_str[:3]
 
                 bar = make_bar(kwh, max_daily, 25, "green")
@@ -354,7 +363,7 @@ def tui(refresh: int = typer.Option(60, "--refresh", "-r", help="Refresh interva
 
         return grid
 
-    async def _run():
+    async def _run() -> None:
         console.print("[dim]Loading dashboard...[/]")
         client = get_client()
 
@@ -377,7 +386,7 @@ def tui(refresh: int = typer.Option(60, "--refresh", "-r", help="Refresh interva
         console.print("\n[dim]Dashboard closed[/]")
 
 
-def main():
+def main() -> None:
     """Entry point."""
     app()
 

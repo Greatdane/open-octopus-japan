@@ -1,64 +1,121 @@
 """Tests for data models."""
 
-from datetime import datetime, timezone
-from open_octopus import (
-    Account, Consumption, Tariff, Rate, Dispatch, DispatchStatus,
-    SavingSession, LivePower
-)
+from datetime import datetime
+
+from open_octopus import Account, Consumption, PostalArea, Rate, SupplyPoint, Tariff
 
 
 def test_account():
     """Test Account model."""
     acc = Account(
         number="A-12345678",
-        balance=-150.50,
-        name="John Smith",
+        balance=-1500,
+        name="田中太郎",
         status="ACTIVE",
-        address="123 Test Street"
+        address="東京都渋谷区1-2-3"
     )
-    assert acc.balance == -150.50
+    assert acc.balance == -1500
     assert acc.number == "A-12345678"
+    assert acc.name == "田中太郎"
+    assert acc.status == "ACTIVE"
+    assert acc.address == "東京都渋谷区1-2-3"
 
 
 def test_consumption():
-    """Test Consumption model."""
+    """Test Consumption model with defaults."""
     c = Consumption(
         start=datetime(2024, 1, 1, 0, 0),
         end=datetime(2024, 1, 1, 0, 30),
         kwh=0.5
     )
     assert c.kwh == 0.5
+    assert c.cost_estimate is None
+    assert c.consumption_step is None
+    assert c.consumption_rate_band is None
 
 
-def test_dispatch_duration():
-    """Test Dispatch duration calculation."""
-    d = Dispatch(
-        start=datetime(2024, 1, 1, 23, 30),
-        end=datetime(2024, 1, 2, 5, 30),
-        source="smart-charge"
+def test_consumption_with_cost():
+    """Test Consumption model with cost estimate from API."""
+    c = Consumption(
+        start=datetime(2024, 1, 1, 0, 0),
+        end=datetime(2024, 1, 1, 0, 30),
+        kwh=0.5,
+        cost_estimate=15.0,
+        consumption_step=1,
+        consumption_rate_band="standard"
     )
-    assert d.duration_minutes == 360  # 6 hours
+    assert c.cost_estimate == 15.0
+    assert c.consumption_step == 1
+    assert c.consumption_rate_band == "standard"
 
 
-def test_live_power():
-    """Test LivePower model."""
-    p = LivePower(
-        demand_watts=1500,
-        read_at=datetime.now(timezone.utc)
+def test_tariff():
+    """Test Tariff model."""
+    t = Tariff(
+        name="シンプルオクトパス",
+        product_code="SIMPLE-2024",
+        standing_charge=28.8,
+        rates={"standard": 30.5, "base": 25.0, "fca": 3.5, "rel": 2.0},
+        peak_rate=30.5
     )
-    assert p.demand_kw == 1.5
+    assert t.standing_charge == 28.8
+    assert t.rates["standard"] == 30.5
+    assert t.peak_rate == 30.5
 
 
-def test_saving_session_active():
-    """Test SavingSession active/upcoming detection."""
-    now = datetime.now(timezone.utc)
-
-    # Past session
-    past = SavingSession(
-        code="TEST1",
-        start=datetime(2020, 1, 1, 14, 0, tzinfo=timezone.utc),
-        end=datetime(2020, 1, 1, 15, 0, tzinfo=timezone.utc),
-        reward_per_kwh=800
+def test_tariff_defaults():
+    """Test Tariff with minimal fields."""
+    t = Tariff(
+        name="Test",
+        product_code="TEST-1",
+        standing_charge=0,
     )
-    assert not past.is_active
-    assert not past.is_upcoming
+    assert t.rates == {}
+    assert t.peak_rate is None
+
+
+def test_rate():
+    """Test Rate model."""
+    r = Rate(
+        rate=30.5,
+        period_end=datetime(2024, 1, 1, 23, 59, 59)
+    )
+    assert r.rate == 30.5
+
+
+def test_supply_point():
+    """Test SupplyPoint model."""
+    sp = SupplyPoint(
+        spin="SPIN123456",
+        status="ACTIVE",
+        meter_serial="M12345",
+        agreements=[{
+            "id": 1,
+            "valid_from": "2024-01-01",
+            "valid_to": None,
+            "product_code": "SIMPLE-2024",
+            "product_name": "シンプルオクトパス",
+        }]
+    )
+    assert sp.spin == "SPIN123456"
+    assert sp.meter_serial == "M12345"
+    assert len(sp.agreements) == 1
+
+
+def test_supply_point_defaults():
+    """Test SupplyPoint with minimal fields."""
+    sp = SupplyPoint(spin="SPIN123", status="ACTIVE")
+    assert sp.meter_serial is None
+    assert sp.agreements == []
+
+
+def test_postal_area():
+    """Test PostalArea model."""
+    pa = PostalArea(
+        postcode="916-0045",
+        prefecture="福井県",
+        city="鯖江市",
+        area="宮前"
+    )
+    assert pa.postcode == "916-0045"
+    assert pa.prefecture == "福井県"

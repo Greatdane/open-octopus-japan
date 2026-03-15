@@ -1,6 +1,6 @@
 """Data models for Open Octopus Japan API responses."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
@@ -9,7 +9,7 @@ from typing import Optional
 class Account:
     """Octopus Energy Japan account information."""
     number: str
-    balance: float  # JPY
+    balance: float  # JPY (negative = credit per API convention)
     name: str
     status: str
     address: str
@@ -21,7 +21,9 @@ class Consumption:
     start: datetime
     end: datetime
     kwh: float
-    cost_estimate: Optional[float] = None  # Estimated cost in yen
+    cost_estimate: Optional[float] = None  # Estimated cost in yen (from API)
+    consumption_step: Optional[int] = None  # Tiered pricing step
+    consumption_rate_band: Optional[str] = None  # Rate band name
 
 
 @dataclass
@@ -30,7 +32,7 @@ class Tariff:
     name: str
     product_code: str
     standing_charge: float  # yen/day
-    rates: dict[str, float]  # rate_name -> yen/kWh
+    rates: dict[str, float] = field(default_factory=dict)  # rate_name -> yen/kWh
     peak_rate: Optional[float] = None  # yen/kWh (effective rate)
 
 
@@ -39,3 +41,21 @@ class Rate:
     """Current electricity rate."""
     rate: float  # yen/kWh
     period_end: datetime
+
+
+@dataclass
+class SupplyPoint:
+    """Electricity supply point details."""
+    spin: str  # Supply Point Identification Number
+    status: str
+    meter_serial: Optional[str] = None
+    agreements: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class PostalArea:
+    """Japanese postal area information."""
+    postcode: str
+    prefecture: str
+    city: str
+    area: str

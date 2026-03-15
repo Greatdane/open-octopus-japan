@@ -18,17 +18,19 @@ Example:
 __version__ = "0.4.0"
 
 from .client import (
+    APIError,
+    AuthenticationError,
+    ConfigurationError,
     OctopusClient,
     OctopusError,
-    AuthenticationError,
-    APIError,
-    ConfigurationError,
 )
 from .models import (
     Account,
     Consumption,
-    Tariff,
+    PostalArea,
     Rate,
+    SupplyPoint,
+    Tariff,
 )
 
 # Optional imports for extras
@@ -55,6 +57,8 @@ __all__ = [
     "Consumption",
     "Tariff",
     "Rate",
+    "SupplyPoint",
+    "PostalArea",
     # Optional
     "OctopusAgent",
     "OctopusMenuBar",

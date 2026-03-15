@@ -1,13 +1,21 @@
 """Async client for the Octopus Energy Japan GraphQL API."""
 
-import httpx
+import logging
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Any, Optional
 
-from .models import Account, Consumption, Tariff, Rate
+import httpx
 
+from .models import Account, Consumption, PostalArea, Rate, SupplyPoint, Tariff
+
+logger = logging.getLogger("open_octopus")
 
 GRAPHQL_URL = "https://api.oejp-kraken.energy/v1/graphql/"
+
+# Token expires after 60 minutes; refresh 5 minutes early
+_TOKEN_TTL_MINUTES = 55
+# Refresh token expires after 7 days; refresh 1 hour early
+_REFRESH_TTL_MINUTES = 7 * 24 * 60 - 60
 
 
 class OctopusClient:
@@ -26,14 +34,6 @@ class OctopusClient:
         password: Optional[str] = None,
         account: Optional[str] = None,
     ):
-        """
-        Initialize the Octopus Energy Japan client.
-
-        Args:
-            email: Your Octopus account email
-            password: Your Octopus account password
-            account: Your account number (e.g., A-FB05ED6C). Auto-discovered if not provided.
-        """
         self.email = email
         self.password = password
         self.account = account
@@ -41,24 +41,26 @@ class OctopusClient:
         self._token: Optional[str] = None
         self._refresh_token: Optional[str] = None
         self._token_expires: Optional[datetime] = None
+        self._refresh_expires: Optional[datetime] = None
         self._http: Optional[httpx.AsyncClient] = None
 
-    async def __aenter__(self):
-        """Async context manager entry."""
+    async def __aenter__(self) -> "OctopusClient":
         self._http = httpx.AsyncClient()
         return self
 
-    async def __aexit__(self, *args):
-        """Async context manager exit."""
+    async def __aexit__(self, *args: object) -> None:
         if self._http:
             await self._http.aclose()
             self._http = None
 
     async def _get_http(self) -> httpx.AsyncClient:
-        """Get or create HTTP client."""
         if self._http is None:
             self._http = httpx.AsyncClient()
         return self._http
+
+    # -------------------------------------------------------------------------
+    # Authentication
+    # -------------------------------------------------------------------------
 
     async def _get_token(self) -> str:
         """Get or refresh GraphQL authentication token."""
@@ -67,10 +69,13 @@ class OctopusClient:
 
         http = await self._get_http()
 
-        if self._refresh_token:
+        # Try refresh token first (if still valid), fall back to credentials
+        if self._refresh_token and self._refresh_expires and datetime.now() < self._refresh_expires:
             variables = {"input": {"refreshToken": self._refresh_token}}
+            logger.debug("Refreshing token via refresh token")
         elif self.email and self.password:
             variables = {"input": {"email": self.email, "password": self.password}}
+            logger.debug("Authenticating with email/password")
         else:
             raise AuthenticationError("Email and password required")
 
@@ -82,6 +87,7 @@ class OctopusClient:
                         obtainKrakenToken(input: $input) {
                             token
                             refreshToken
+                            refreshExpiresIn
                         }
                     }
                 """,
@@ -93,17 +99,30 @@ class OctopusClient:
         data = resp.json()
 
         if "errors" in data:
+            # If refresh token failed, retry with credentials
+            if self._refresh_token and self.email and self.password:
+                logger.debug("Refresh token failed, retrying with credentials")
+                self._refresh_token = None
+                self._refresh_expires = None
+                return await self._get_token()
             raise AuthenticationError(data["errors"][0]["message"])
 
         token_data = data["data"]["obtainKrakenToken"]
         self._token = token_data["token"]
-        if "refreshToken" in token_data:
+        self._token_expires = datetime.now() + timedelta(minutes=_TOKEN_TTL_MINUTES)
+
+        if token_data.get("refreshToken"):
             self._refresh_token = token_data["refreshToken"]
-        self._token_expires = datetime.now() + timedelta(minutes=55)
+            refresh_seconds = token_data.get("refreshExpiresIn")
+            if refresh_seconds:
+                self._refresh_expires = datetime.now() + timedelta(seconds=int(refresh_seconds))
+            else:
+                self._refresh_expires = datetime.now() + timedelta(minutes=_REFRESH_TTL_MINUTES)
+
         return self._token
 
-    async def _graphql(self, query: str, variables: Optional[dict] = None) -> dict:
-        """Execute a GraphQL query with authentication."""
+    async def _graphql(self, query: str, variables: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        """Execute an authenticated GraphQL query."""
         token = await self._get_token()
         http = await self._get_http()
 
@@ -113,20 +132,37 @@ class OctopusClient:
             json={"query": query, "variables": variables or {}}
         )
         resp.raise_for_status()
-        data = resp.json()
+        data: dict[str, Any] = resp.json()
 
         if "errors" in data:
-            # If we also got data back, treat as partial success
             if data.get("data"):
-                import sys
-                print(f"GraphQL partial error: {data['errors'][0]['message']}", file=sys.stderr)
-                return data["data"]
+                logger.debug("GraphQL partial error: %s", data["errors"][0]["message"])
+                result: dict[str, Any] = data["data"]
+                return result
             raise APIError(data["errors"][0]["message"])
 
-        return data["data"]
+        result = data["data"]
+        return result
+
+    async def _graphql_public(self, query: str, variables: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        """Execute an unauthenticated GraphQL query."""
+        http = await self._get_http()
+
+        resp = await http.post(
+            GRAPHQL_URL,
+            json={"query": query, "variables": variables or {}}
+        )
+        resp.raise_for_status()
+        data: dict[str, Any] = resp.json()
+
+        if "errors" in data:
+            raise APIError(data["errors"][0]["message"])
+
+        result: dict[str, Any] = data["data"]
+        return result
 
     # -------------------------------------------------------------------------
-    # Account & Billing
+    # Account
     # -------------------------------------------------------------------------
 
     async def _ensure_account(self) -> str:
@@ -134,8 +170,7 @@ class OctopusClient:
         if self.account:
             return self.account
 
-        data = await self._graphql(
-            """
+        data = await self._graphql("""
             query accountViewer {
                 viewer {
                     accounts {
@@ -143,8 +178,7 @@ class OctopusClient:
                     }
                 }
             }
-            """
-        )
+        """)
         accounts = data.get("viewer", {}).get("accounts", [])
         if accounts:
             self.account = accounts[0]["number"]
@@ -152,16 +186,10 @@ class OctopusClient:
         raise ConfigurationError("No account found for this user")
 
     async def get_account(self) -> Account:
-        """
-        Get account information including balance.
-
-        Returns:
-            Account with balance, name, status and address
-        """
+        """Get account information including balance."""
         account_number = await self._ensure_account()
 
-        data = await self._graphql(
-            """
+        data = await self._graphql("""
             query GetAccount($account: String!) {
                 account(accountNumber: $account) {
                     balance
@@ -172,14 +200,12 @@ class OctopusClient:
                     }
                 }
             }
-            """,
-            {"account": account_number}
-        )
-        acc = data["account"]
+        """, {"account": account_number})
 
+        acc = data["account"]
         return Account(
             number=account_number,
-            balance=acc["balance"],  # Already in yen
+            balance=acc["balance"],
             name=acc["billingName"] or "",
             status=acc["status"] or "",
             address=acc["properties"][0]["address"] if acc.get("properties") else ""
@@ -198,30 +224,103 @@ class OctopusClient:
         """
         Get half-hourly electricity consumption.
 
-        Uses the PropertyType.measurements endpoint with IntervalMeasurementType,
-        which is the correct endpoint for the Japan Kraken API.
+        Tries the halfHourlyReadings endpoint first (used by official Octopus
+        Energy Japan examples, returns costEstimate). Falls back to the
+        measurements endpoint if halfHourlyReadings fails.
 
         Args:
             periods: Number of 30-minute periods (default 48 = 24 hours)
-            start: Start datetime (optional, defaults to last 24 hours)
+            start: Start datetime (optional, defaults to last N periods)
             end: End datetime (optional, defaults to now)
 
         Returns:
-            List of Consumption readings
+            List of Consumption readings sorted by start time
         """
-        account_number = await self._ensure_account()
-
         if not end:
             end = datetime.now()
         if not start:
             start = end - timedelta(minutes=30 * periods)
+
+        try:
+            readings = await self._get_consumption_hh(start, end)
+            if readings:
+                return readings
+            logger.debug("halfHourlyReadings returned empty, trying measurements")
+        except (APIError, KeyError, TypeError, AttributeError) as e:
+            logger.debug("halfHourlyReadings failed (%s), trying measurements", e)
+
+        return await self._get_consumption_measurements(start, end)
+
+    async def _get_consumption_hh(
+        self, start: datetime, end: datetime
+    ) -> list[Consumption]:
+        """Get consumption via halfHourlyReadings endpoint."""
+        account_number = await self._ensure_account()
+
+        data = await self._graphql("""
+            query halfHourlyReadings(
+                $accountNumber: String!,
+                $fromDatetime: DateTime,
+                $toDatetime: DateTime
+            ) {
+                account(accountNumber: $accountNumber) {
+                    properties {
+                        electricitySupplyPoints {
+                            halfHourlyReadings(
+                                fromDatetime: $fromDatetime,
+                                toDatetime: $toDatetime
+                            ) {
+                                startAt
+                                endAt
+                                value
+                                costEstimate
+                                consumptionStep
+                                consumptionRateBand
+                            }
+                        }
+                    }
+                }
+            }
+        """, {
+            "accountNumber": account_number,
+            "fromDatetime": start.isoformat(),
+            "toDatetime": end.isoformat(),
+        })
+
+        readings = []
+        account_data = data.get("account") or {}
+        for prop in account_data.get("properties") or []:
+            for sp in prop.get("electricitySupplyPoints") or []:
+                for r in sp.get("halfHourlyReadings") or []:
+                    if not r.get("startAt"):
+                        continue
+                    try:
+                        cost = r.get("costEstimate")
+                        readings.append(Consumption(
+                            start=datetime.fromisoformat(r["startAt"]),
+                            end=datetime.fromisoformat(r["endAt"]),
+                            kwh=float(r["value"]),
+                            cost_estimate=float(cost) if cost is not None else None,
+                            consumption_step=r.get("consumptionStep"),
+                            consumption_rate_band=r.get("consumptionRateBand"),
+                        ))
+                    except (ValueError, KeyError, TypeError):
+                        continue
+
+        return sorted(readings, key=lambda c: c.start)
+
+    async def _get_consumption_measurements(
+        self, start: datetime, end: datetime
+    ) -> list[Consumption]:
+        """Get consumption via measurements endpoint (fallback)."""
+        account_number = await self._ensure_account()
 
         readings = []
         cursor = None
         has_next = True
 
         while has_next:
-            variables = {
+            variables: dict = {
                 "account": account_number,
                 "startAt": start.isoformat(),
                 "endAt": end.isoformat()
@@ -229,15 +328,19 @@ class OctopusClient:
             if cursor:
                 variables["after"] = cursor
 
-            data = await self._graphql(
-                """
-                query getMeasurements($account: String!, $startAt: DateTime, $endAt: DateTime, $after: String) {
+            data = await self._graphql("""
+                query getMeasurements(
+                    $account: String!,
+                    $startAt: DateTime,
+                    $endAt: DateTime,
+                    $after: String
+                ) {
                     account(accountNumber: $account) {
                         properties {
                             measurements(
                                 startAt: $startAt,
                                 endAt: $endAt,
-                                first: 500,
+                                first: 100,
                                 after: $after,
                                 utilityFilters: [{electricityFilters: {}}]
                             ) {
@@ -259,14 +362,12 @@ class OctopusClient:
                         }
                     }
                 }
-                """,
-                variables
-            )
+            """, variables)
 
             if not data or not data.get("account"):
                 break
 
-            properties = data.get("account", {}).get("properties", [])
+            properties = (data.get("account") or {}).get("properties") or []
             if not properties:
                 break
 
@@ -277,13 +378,10 @@ class OctopusClient:
                     if not node.get("startAt"):
                         continue
                     try:
-                        start_at = datetime.fromisoformat(node["startAt"])
-                        end_at = datetime.fromisoformat(node["endAt"])
                         readings.append(Consumption(
-                            start=start_at,
-                            end=end_at,
+                            start=datetime.fromisoformat(node["startAt"]),
+                            end=datetime.fromisoformat(node["endAt"]),
                             kwh=float(node["value"]),
-                            cost_estimate=0.0
                         ))
                     except (ValueError, KeyError, TypeError):
                         continue
@@ -294,17 +392,24 @@ class OctopusClient:
 
         return sorted(readings, key=lambda c: c.start)
 
-    async def get_daily_usage(self, days: int = 7) -> dict[str, float]:
+    async def get_daily_usage(
+        self, days: int = 7, start: Optional[datetime] = None, end: Optional[datetime] = None
+    ) -> dict[str, float]:
         """
         Get daily electricity consumption totals.
 
         Args:
-            days: Number of days to fetch
+            days: Number of days to fetch (used if start/end not provided)
+            start: Start datetime (optional)
+            end: End datetime (optional)
 
         Returns:
             Dict mapping date strings to kWh totals
         """
-        consumption = await self.get_consumption(periods=days * 48)
+        if start and end:
+            consumption = await self.get_consumption(start=start, end=end)
+        else:
+            consumption = await self.get_consumption(periods=days * 48)
         daily: dict[str, float] = {}
         for c in consumption:
             day = c.start.strftime("%Y-%m-%d")
@@ -316,16 +421,10 @@ class OctopusClient:
     # -------------------------------------------------------------------------
 
     async def get_tariff(self) -> Optional[Tariff]:
-        """
-        Get current electricity tariff details.
-
-        Returns:
-            Tariff with rates, or None if not found
-        """
+        """Get current electricity tariff details."""
         account_number = await self._ensure_account()
 
-        data = await self._graphql(
-            """
+        data = await self._graphql("""
             query GetTariffJapan($account: String!) {
                 account(accountNumber: $account) {
                     properties {
@@ -359,9 +458,7 @@ class OctopusClient:
                     }
                 }
             }
-            """,
-            {"account": account_number}
-        )
+        """, {"account": account_number})
 
         properties = data.get("account", {}).get("properties", [])
         for prop in properties:
@@ -377,50 +474,142 @@ class OctopusClient:
                     display_name = product.get("displayName", "Unknown")
                     standing_charge = float(product.get("standingChargePricePerDay") or 0)
 
-                    # Fuel cost adjustment and renewable levy (per kWh)
-                    fca = float(product.get("fuelCostAdjustment", {}).get("pricePerUnitIncTax") or 0)
-                    rel = float(product.get("renewableEnergyLevy", {}).get("pricePerUnitIncTax") or 0)
+                    fca = float((product.get("fuelCostAdjustment") or {}).get("pricePerUnitIncTax") or 0)
+                    rel = float((product.get("renewableEnergyLevy") or {}).get("pricePerUnitIncTax") or 0)
 
-                    # Consumption charges (unit rate per kWh)
                     rates = {}
                     unit_rate = None
                     for charge in product.get("consumptionCharges", []) or []:
                         rate = float(charge.get("pricePerUnitIncTax") or 0)
                         band = charge.get("band", "")
                         tou = charge.get("timeOfUse", "")
-                        rates[band or tou or "standard"] = rate
+                        label = band or tou or "standard"
+                        rates[label] = rate
                         if unit_rate is None or band == "standard":
                             unit_rate = rate
 
-                    # Total effective rate = unit rate + fuel cost adj + renewable levy
                     effective_rate = (unit_rate or 0) + fca + rel
 
                     return Tariff(
                         name=display_name,
                         product_code=code,
                         standing_charge=standing_charge,
-                        rates={"standard": effective_rate, "base": unit_rate or 0, "fca": fca, "rel": rel, **rates},
+                        rates={
+                            "standard": effective_rate,
+                            "base": unit_rate or 0,
+                            "fca": fca,
+                            "rel": rel,
+                            **rates,
+                        },
                         peak_rate=effective_rate,
                     )
 
         return None
 
     def get_current_rate(self, tariff: Tariff) -> Rate:
-        """
-        Get current rate.
-
-        Args:
-            tariff: Tariff object with rate info
-
-        Returns:
-            Rate with current pricing
-        """
+        """Get current rate from tariff info."""
         now = datetime.now()
         rate = tariff.peak_rate or tariff.rates.get("standard", 0)
         return Rate(
             rate=rate,
             period_end=now.replace(hour=23, minute=59, second=59) + timedelta(seconds=1),
         )
+
+    # -------------------------------------------------------------------------
+    # Supply Points
+    # -------------------------------------------------------------------------
+
+    async def get_supply_points(self) -> list[SupplyPoint]:
+        """Get electricity supply point details for the account."""
+        account_number = await self._ensure_account()
+
+        data = await self._graphql("""
+            query GetSupplyPoints($account: String!) {
+                account(accountNumber: $account) {
+                    properties {
+                        electricitySupplyPoints {
+                            spin
+                            status
+                            meters {
+                                serialNumber
+                            }
+                            agreements {
+                                id
+                                validFrom
+                                validTo
+                                product {
+                                    ... on ProductInterface {
+                                        code
+                                        displayName
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        """, {"account": account_number})
+
+        supply_points = []
+        for prop in data.get("account", {}).get("properties", []):
+            for sp in prop.get("electricitySupplyPoints", []):
+                if sp is None:
+                    continue
+                meters = sp.get("meters") or []
+                meter_serial = meters[0]["serialNumber"] if meters else None
+                agreements = []
+                for agr in sp.get("agreements", []) or []:
+                    product = agr.get("product") or {}
+                    agreements.append({
+                        "id": agr.get("id"),
+                        "valid_from": agr.get("validFrom"),
+                        "valid_to": agr.get("validTo"),
+                        "product_code": product.get("code"),
+                        "product_name": product.get("displayName"),
+                    })
+                supply_points.append(SupplyPoint(
+                    spin=sp.get("spin", ""),
+                    status=sp.get("status", ""),
+                    meter_serial=meter_serial,
+                    agreements=agreements,
+                ))
+
+        return supply_points
+
+    # -------------------------------------------------------------------------
+    # Public Queries (no auth required)
+    # -------------------------------------------------------------------------
+
+    async def get_postal_areas(self, postcode: str) -> list[PostalArea]:
+        """
+        Look up area information by Japanese postcode. No authentication required.
+
+        Args:
+            postcode: Japanese postcode (e.g., "916-0045")
+
+        Returns:
+            List of matching postal areas
+        """
+        data = await self._graphql_public("""
+            query postalAreas($postcode: String!) {
+                postalAreas(postcode: $postcode) {
+                    postcode
+                    prefecture
+                    city
+                    area
+                }
+            }
+        """, {"postcode": postcode})
+
+        return [
+            PostalArea(
+                postcode=area["postcode"],
+                prefecture=area["prefecture"],
+                city=area["city"],
+                area=area["area"],
+            )
+            for area in data.get("postalAreas", [])
+        ]
 
 
 # -----------------------------------------------------------------------------
