@@ -8,9 +8,9 @@ import asyncio
 import json
 import os
 import sys
-from datetime import datetime, timedelta
 from collections import defaultdict
-from typing import Optional, Any
+from datetime import datetime, timedelta
+from typing import Any, Optional
 
 from .client import OctopusClient
 from .models import Tariff
@@ -86,6 +86,12 @@ class MenuBarServer:
                     result["tariff_name"] = tariff.name
                     result["standing_charge"] = tariff.standing_charge
                     result["peak_rate"] = tariff.peak_rate
+                    result["fca"] = tariff.rates.get("fca", 0.0)
+                    result["rel"] = tariff.rates.get("rel", 0.0)
+
+                    # Send tiered rates to Swift (keys like "0-15kWh")
+                    tier_rates = {k: v for k, v in tariff.rates.items() if "kWh" in k}
+                    result["tier_rates"] = tier_rates
 
                     rate_info = self.client.get_current_rate(tariff)
                     result["rate"] = rate_info.rate
@@ -167,12 +173,43 @@ class MenuBarServer:
         return result
 
     def _calculate_cost(self, total_kwh: float, tariff: Optional[Tariff]) -> float:
-        """Calculate cost for a day's usage in yen."""
+        """Calculate cost for a day's usage using tiered pricing (yen)."""
         if not tariff:
             return 0.0
 
-        rate = tariff.peak_rate or tariff.rates.get("standard", 0)
-        cost = total_kwh * rate
+        # Parse tier rates (keys like "0-15kWh", "15-120kWh", "300-∞kWh")
+        tiers: list[tuple[float, float, float]] = []  # (start, end, rate)
+        for key, rate in tariff.rates.items():
+            if "kWh" not in key:
+                continue
+            parts = key.replace("kWh", "").split("-")
+            if len(parts) == 2:
+                start = float(parts[0])
+                end = float("inf") if parts[1] in ("∞", "inf", "") else float(parts[1])
+                tiers.append((start, end, rate))
+
+        if tiers:
+            # Sort tiers by start kWh
+            tiers.sort(key=lambda t: t[0])
+            cost = 0.0
+            remaining = total_kwh
+            for start, end, rate in tiers:
+                tier_kwh = min(remaining, end - start)
+                if tier_kwh <= 0:
+                    break
+                cost += tier_kwh * rate
+                remaining -= tier_kwh
+        else:
+            # Flat rate fallback
+            rate = tariff.peak_rate or tariff.rates.get("standard", 0)
+            cost = total_kwh * rate
+
+        # Add FCA + REL per kWh
+        fca = tariff.rates.get("fca", 0)
+        rel = tariff.rates.get("rel", 0)
+        cost += total_kwh * (fca + rel)
+
+        # Add standing charge
         cost += tariff.standing_charge
 
         return round(cost, 2)
@@ -193,6 +230,9 @@ class MenuBarServer:
             "tariff_name": None,
             "standing_charge": 0.0,
             "peak_rate": None,
+            "fca": 0.0,
+            "rel": 0.0,
+            "tier_rates": {},
             "monthly_projection": 0.0,
         }
 
