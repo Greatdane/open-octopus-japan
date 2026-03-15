@@ -467,3 +467,284 @@ async def test_get_daily_usage():
     daily = await client.get_daily_usage(days=1)
     assert "2024-01-01" in daily
     assert daily["2024-01-01"] == 2.0
+
+
+# =============================================================================
+# Agreements
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_get_agreements():
+    client = _make_client()
+    mock_http = AsyncMock()
+    mock_http.post.side_effect = [
+        AUTH_RESPONSE,
+        _mock_response({
+            "data": {
+                "account": {
+                    "properties": [{
+                        "electricitySupplyPoints": [{
+                            "agreements": [
+                                {
+                                    "id": 42,
+                                    "validFrom": "2024-01-01T00:00:00+09:00",
+                                    "validTo": None,
+                                    "product": {
+                                        "code": "SIMPLE-2024",
+                                        "displayName": "シンプルオクトパス",
+                                    },
+                                },
+                                {
+                                    "id": 30,
+                                    "validFrom": "2023-01-01T00:00:00+09:00",
+                                    "validTo": "2023-12-31T23:59:59+09:00",
+                                    "product": {
+                                        "code": "OLD-2023",
+                                        "displayName": "旧プラン",
+                                    },
+                                },
+                            ]
+                        }]
+                    }]
+                }
+            }
+        }),
+    ]
+    client._http = mock_http
+
+    agrs = await client.get_agreements()
+    assert len(agrs) == 2
+    assert agrs[0].id == 42
+    assert agrs[0].product_code == "SIMPLE-2024"
+    assert agrs[0].valid_to is None
+    assert agrs[1].valid_to is not None
+
+
+# =============================================================================
+# Available Products
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_get_available_products():
+    client = _make_client()
+    mock_http = AsyncMock()
+    mock_http.post.return_value = _mock_response({
+        "data": {
+            "products": [
+                {
+                    "code": "GREEN-2024",
+                    "displayName": "グリーンオクトパス",
+                    "description": "Renewable plan",
+                    "standingChargePricePerDay": 28.8,
+                    "consumptionCharges": [
+                        {"pricePerUnitIncTax": 25.0, "band": "standard"},
+                    ],
+                }
+            ]
+        }
+    })
+    client._http = mock_http
+
+    prods = await client.get_available_products()
+    assert len(prods) == 1
+    assert prods[0].code == "GREEN-2024"
+    assert prods[0].standing_charge == 28.8
+    assert prods[0].rates["standard"] == 25.0
+
+
+@pytest.mark.asyncio
+async def test_get_available_products_api_error():
+    """Returns empty list when API doesn't support this query."""
+    client = _make_client()
+    mock_http = AsyncMock()
+    mock_http.post.return_value = _mock_response({
+        "errors": [{"message": "Field not found"}]
+    })
+    client._http = mock_http
+
+    prods = await client.get_available_products()
+    assert prods == []
+
+
+# =============================================================================
+# Billing
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_get_billing():
+    client = _make_client()
+    mock_http = AsyncMock()
+    mock_http.post.side_effect = [
+        AUTH_RESPONSE,
+        _mock_response({
+            "data": {
+                "account": {
+                    "billingTransactions": {
+                        "edges": [{
+                            "node": {
+                                "id": "txn-1",
+                                "postedDate": "2024-06-01T00:00:00+09:00",
+                                "amounts": {"net": -5000},
+                                "transactionType": "PAYMENT",
+                                "title": "Card payment",
+                                "isReversed": False,
+                            }
+                        }]
+                    }
+                }
+            }
+        }),
+    ]
+    client._http = mock_http
+
+    txns = await client.get_billing()
+    assert len(txns) == 1
+    assert txns[0]["amount"] == -5000
+    assert txns[0]["type"] == "PAYMENT"
+
+
+@pytest.mark.asyncio
+async def test_get_billing_not_supported():
+    """Returns empty list when billing endpoint not available."""
+    client = _make_client()
+    mock_http = AsyncMock()
+    mock_http.post.side_effect = [
+        AUTH_RESPONSE,
+        _mock_response({"errors": [{"message": "Not available"}]}),
+    ]
+    client._http = mock_http
+
+    txns = await client.get_billing()
+    assert txns == []
+
+
+# =============================================================================
+# Loyalty Points
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_get_loyalty_points():
+    client = _make_client()
+    mock_http = AsyncMock()
+    mock_http.post.side_effect = [
+        AUTH_RESPONSE,
+        _mock_response({
+            "data": {
+                "account": {
+                    "loyaltyPointLedgers": [{
+                        "balanceCarriedForward": 500,
+                        "entries": [
+                            {"value": 100, "balanceCarriedForward": 500, "reasonCode": "SIGNUP"},
+                        ],
+                    }]
+                }
+            }
+        }),
+    ]
+    client._http = mock_http
+
+    points = await client.get_loyalty_points()
+    assert points is not None
+    assert points.balance == 500
+    assert len(points.ledger_entries) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_loyalty_points_not_available():
+    client = _make_client()
+    mock_http = AsyncMock()
+    mock_http.post.side_effect = [
+        AUTH_RESPONSE,
+        _mock_response({"errors": [{"message": "Not available"}]}),
+    ]
+    client._http = mock_http
+
+    points = await client.get_loyalty_points()
+    assert points is None
+
+
+# =============================================================================
+# Planned Dispatches
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_get_planned_dispatches():
+    client = _make_client()
+    mock_http = AsyncMock()
+    mock_http.post.side_effect = [
+        AUTH_RESPONSE,
+        _mock_response({
+            "data": {
+                "plannedDispatches": [
+                    {
+                        "startDt": "2024-01-01T23:00:00+09:00",
+                        "endDt": "2024-01-02T05:00:00+09:00",
+                        "delta": "2.5",
+                        "meta": {"source": "smart-charge"},
+                    }
+                ]
+            }
+        }),
+    ]
+    client._http = mock_http
+
+    dispatches = await client.get_planned_dispatches()
+    assert len(dispatches) == 1
+    assert dispatches[0].delta == 2.5
+    assert dispatches[0].source == "smart-charge"
+
+
+@pytest.mark.asyncio
+async def test_get_planned_dispatches_not_available():
+    client = _make_client()
+    mock_http = AsyncMock()
+    mock_http.post.side_effect = [
+        AUTH_RESPONSE,
+        _mock_response({"errors": [{"message": "Not available"}]}),
+    ]
+    client._http = mock_http
+
+    dispatches = await client.get_planned_dispatches()
+    assert dispatches == []
+
+
+# =============================================================================
+# Communication Preferences
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_get_communication_preferences():
+    client = _make_client()
+    mock_http = AsyncMock()
+    mock_http.post.side_effect = [
+        AUTH_RESPONSE,
+        _mock_response({
+            "data": {
+                "viewer": {
+                    "preferences": {
+                        "isOptedInToClientMessages": True,
+                        "isOptedInToOfferMessages": False,
+                    }
+                }
+            }
+        }),
+    ]
+    client._http = mock_http
+
+    prefs = await client.get_communication_preferences()
+    assert prefs["isOptedInToClientMessages"] is True
+    assert prefs["isOptedInToOfferMessages"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_communication_preferences_not_available():
+    client = _make_client()
+    mock_http = AsyncMock()
+    mock_http.post.side_effect = [
+        AUTH_RESPONSE,
+        _mock_response({"errors": [{"message": "Not available"}]}),
+    ]
+    client._http = mock_http
+
+    prefs = await client.get_communication_preferences()
+    assert prefs == {}

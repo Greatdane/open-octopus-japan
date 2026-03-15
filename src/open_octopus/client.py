@@ -6,7 +6,18 @@ from typing import Any, Optional
 
 import httpx
 
-from .models import Account, Consumption, PostalArea, Rate, SupplyPoint, Tariff
+from .models import (
+    Account,
+    Agreement,
+    Consumption,
+    LoyaltyPoints,
+    PlannedDispatch,
+    PostalArea,
+    Product,
+    Rate,
+    SupplyPoint,
+    Tariff,
+)
 
 logger = logging.getLogger("open_octopus")
 
@@ -160,6 +171,17 @@ class OctopusClient:
 
         result: dict[str, Any] = data["data"]
         return result
+
+    async def _graphql_safe(self, query: str, variables: Optional[dict[str, Any]] = None) -> Optional[dict[str, Any]]:
+        """Execute an authenticated GraphQL query, returning None on any error.
+
+        Use this for speculative queries that may not exist on the Japan API.
+        """
+        try:
+            return await self._graphql(query, variables)
+        except (httpx.HTTPStatusError, APIError) as e:
+            logger.debug("GraphQL query failed (safe): %s", e)
+            return None
 
     # -------------------------------------------------------------------------
     # Account
@@ -610,6 +632,373 @@ class OctopusClient:
             )
             for area in data.get("postalAreas", [])
         ]
+
+    # -------------------------------------------------------------------------
+    # Agreements
+    # -------------------------------------------------------------------------
+
+    async def get_agreements(self) -> list[Agreement]:
+        """Get all electricity supply agreements for the account."""
+        account_number = await self._ensure_account()
+
+        data = await self._graphql("""
+            query GetAgreements($account: String!) {
+                account(accountNumber: $account) {
+                    properties {
+                        electricitySupplyPoints {
+                            agreements {
+                                id
+                                validFrom
+                                validTo
+                                product {
+                                    ... on ProductInterface {
+                                        code
+                                        displayName
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        """, {"account": account_number})
+
+        agreements = []
+        for prop in (data.get("account") or {}).get("properties") or []:
+            for sp in prop.get("electricitySupplyPoints") or []:
+                if sp is None:
+                    continue
+                for agr in sp.get("agreements") or []:
+                    product = agr.get("product") or {}
+                    valid_from = None
+                    valid_to = None
+                    try:
+                        if agr.get("validFrom"):
+                            valid_from = datetime.fromisoformat(agr["validFrom"])
+                        if agr.get("validTo"):
+                            valid_to = datetime.fromisoformat(agr["validTo"])
+                    except (ValueError, TypeError):
+                        pass
+                    agreements.append(Agreement(
+                        id=agr.get("id", 0),
+                        valid_from=valid_from,
+                        valid_to=valid_to,
+                        product_code=product.get("code", ""),
+                        product_name=product.get("displayName", ""),
+                    ))
+
+        return agreements
+
+    # -------------------------------------------------------------------------
+    # Available Products
+    # -------------------------------------------------------------------------
+
+    async def get_available_products(self, postcode: Optional[str] = None) -> list[Product]:
+        """
+        Browse available electricity products/plans.
+
+        Args:
+            postcode: Optional Japanese postcode to filter by region
+
+        Returns:
+            List of available products. Returns empty list if query not supported.
+        """
+        try:
+            if postcode:
+                data = await self._graphql_public("""
+                    query GetProducts($postcode: String!) {
+                        productsForPostalArea(postcode: $postcode) {
+                            code
+                            displayName
+                            description
+                            standingChargePricePerDay
+                            consumptionCharges {
+                                pricePerUnitIncTax
+                                band
+                            }
+                        }
+                    }
+                """, {"postcode": postcode})
+                products_data = data.get("productsForPostalArea") or []
+            else:
+                data = await self._graphql_public("""
+                    query GetProducts {
+                        products {
+                            code
+                            displayName
+                            description
+                            standingChargePricePerDay
+                            consumptionCharges {
+                                pricePerUnitIncTax
+                                band
+                            }
+                        }
+                    }
+                """)
+                products_data = data.get("products") or []
+
+            products = []
+            for p in products_data:
+                rates: dict[str, float] = {}
+                for charge in p.get("consumptionCharges") or []:
+                    band = charge.get("band", "standard")
+                    rates[band] = float(charge.get("pricePerUnitIncTax") or 0)
+                products.append(Product(
+                    code=p.get("code", ""),
+                    display_name=p.get("displayName", ""),
+                    description=p.get("description", ""),
+                    standing_charge=float(p.get("standingChargePricePerDay") or 0),
+                    rates=rates,
+                ))
+            return products
+        except (httpx.HTTPStatusError, APIError, KeyError, TypeError, AttributeError) as e:
+            logger.debug("get_available_products failed: %s", e)
+            return []
+
+    # -------------------------------------------------------------------------
+    # Billing
+    # -------------------------------------------------------------------------
+
+    async def get_billing(self, limit: int = 10) -> list[dict[str, Any]]:
+        """
+        Get recent billing transactions.
+
+        Args:
+            limit: Number of transactions to fetch (default 10)
+
+        Returns:
+            List of transaction dicts. Returns empty list if not supported.
+        """
+        try:
+            account_number = await self._ensure_account()
+
+            data = await self._graphql_safe("""
+                query GetBilling($account: String!, $first: Int) {
+                    account(accountNumber: $account) {
+                        billingTransactions(first: $first) {
+                            edges {
+                                node {
+                                    id
+                                    postedDate
+                                    amounts {
+                                        net
+                                    }
+                                    transactionType
+                                    title
+                                    isReversed
+                                }
+                            }
+                        }
+                    }
+                }
+            """, {"account": account_number, "first": limit})
+
+            if not data:
+                return []
+
+            transactions = []
+            billing = (data.get("account") or {}).get("billingTransactions") or {}
+            for edge in billing.get("edges") or []:
+                node = edge.get("node") or {}
+                amounts = node.get("amounts") or {}
+                transactions.append({
+                    "id": node.get("id", ""),
+                    "posted_date": node.get("postedDate", ""),
+                    "amount": float(amounts.get("net") or 0),
+                    "type": node.get("transactionType", ""),
+                    "title": node.get("title", ""),
+                    "is_reversed": node.get("isReversed", False),
+                })
+            return transactions
+        except (KeyError, TypeError, AttributeError) as e:
+            logger.debug("get_billing failed: %s", e)
+            return []
+
+    # -------------------------------------------------------------------------
+    # Loyalty Points (may not be available)
+    # -------------------------------------------------------------------------
+
+    async def get_loyalty_points(self) -> Optional[LoyaltyPoints]:
+        """
+        Get loyalty/rewards points balance.
+
+        Returns None if loyalty program is not available on this account.
+        """
+        try:
+            account_number = await self._ensure_account()
+
+            data = await self._graphql_safe("""
+                query GetLoyalty($account: String!) {
+                    account(accountNumber: $account) {
+                        loyaltyPointLedgers {
+                            balanceCarriedForward
+                            entries {
+                                value
+                                balanceCarriedForward
+                                reasonCode
+                            }
+                        }
+                    }
+                }
+            """, {"account": account_number})
+
+            if not data:
+                return None
+
+            ledgers = (data.get("account") or {}).get("loyaltyPointLedgers") or []
+            if not ledgers:
+                return None
+
+            ledger = ledgers[0] if isinstance(ledgers, list) else ledgers
+            balance = int(ledger.get("balanceCarriedForward") or 0)
+            entries = []
+            for entry in ledger.get("entries") or []:
+                entries.append({
+                    "value": entry.get("value", 0),
+                    "balance": entry.get("balanceCarriedForward", 0),
+                    "reason": entry.get("reasonCode", ""),
+                })
+
+            return LoyaltyPoints(balance=balance, ledger_entries=entries)
+        except (APIError, KeyError, TypeError, AttributeError) as e:
+            logger.debug("get_loyalty_points not available: %s", e)
+            return None
+
+    # -------------------------------------------------------------------------
+    # Planned Dispatches (may not be available)
+    # -------------------------------------------------------------------------
+
+    async def get_planned_dispatches(self) -> list[PlannedDispatch]:
+        """
+        Get planned smart device dispatch windows.
+
+        Returns empty list if dispatches are not available on this account.
+        """
+        try:
+            account_number = await self._ensure_account()
+
+            data = await self._graphql_safe("""
+                query GetDispatches($account: String!) {
+                    plannedDispatches(accountNumber: $account) {
+                        startDt
+                        endDt
+                        delta
+                        meta {
+                            source
+                        }
+                    }
+                }
+            """, {"account": account_number})
+
+            if not data:
+                return []
+
+            dispatches = []
+            for d in data.get("plannedDispatches") or []:
+                try:
+                    dispatches.append(PlannedDispatch(
+                        start=datetime.fromisoformat(d["startDt"]),
+                        end=datetime.fromisoformat(d["endDt"]),
+                        delta=float(d["delta"]) if d.get("delta") is not None else None,
+                        source=(d.get("meta") or {}).get("source", ""),
+                    ))
+                except (ValueError, KeyError, TypeError):
+                    continue
+            return dispatches
+        except (APIError, KeyError, TypeError, AttributeError) as e:
+            logger.debug("get_planned_dispatches not available: %s", e)
+            return []
+
+    # -------------------------------------------------------------------------
+    # Communication Preferences (may not be available)
+    # -------------------------------------------------------------------------
+
+    async def get_communication_preferences(self) -> dict[str, Any]:
+        """
+        Get communication/notification preferences.
+
+        Returns empty dict if not available.
+        """
+        try:
+            data = await self._graphql_safe("""
+                query GetPreferences {
+                    viewer {
+                        preferences {
+                            isOptedInToClientMessages
+                            isOptedInToOfferMessages
+                            isOptedInToRecommendedMessages
+                            isOptedInToUpdateMessages
+                            isOptedInToThirdPartyMessages
+                        }
+                    }
+                }
+            """)
+
+            if not data:
+                return {}
+
+            prefs = (data.get("viewer") or {}).get("preferences") or {}
+            return dict(prefs)
+        except (APIError, KeyError, TypeError, AttributeError) as e:
+            logger.debug("get_communication_preferences not available: %s", e)
+            return {}
+
+    # -------------------------------------------------------------------------
+    # Mutations (client-only, not exposed in CLI)
+    # -------------------------------------------------------------------------
+
+    async def initiate_product_switch(self, product_code: str) -> dict[str, Any]:
+        """
+        Initiate a switch to a different electricity product.
+
+        WARNING: This modifies your account. Use with care.
+
+        Args:
+            product_code: The product code to switch to
+
+        Returns:
+            API response dict
+        """
+        account_number = await self._ensure_account()
+
+        data = await self._graphql("""
+            mutation SwitchProduct($input: InitiateProductSwitchInput!) {
+                initiateProductSwitch(input: $input) {
+                    switchDate
+                    errors {
+                        message
+                    }
+                }
+            }
+        """, {"input": {"accountNumber": account_number, "productCode": product_code}})
+
+        return data.get("initiateProductSwitch") or {}
+
+    async def initiate_amperage_change(self, amperage: int) -> dict[str, Any]:
+        """
+        Request an amperage change for your electricity supply (Japan-specific).
+
+        WARNING: This modifies your account. Use with care.
+
+        Args:
+            amperage: Requested amperage (e.g., 30, 40, 50, 60)
+
+        Returns:
+            API response dict
+        """
+        account_number = await self._ensure_account()
+
+        data = await self._graphql("""
+            mutation ChangeAmperage($input: InitiateAmperageChangeInput!) {
+                initiateAmperageChange(input: $input) {
+                    errors {
+                        message
+                    }
+                }
+            }
+        """, {"input": {"accountNumber": account_number, "requestedAmperage": amperage}})
+
+        return data.get("initiateAmperageChange") or {}
 
 
 # -----------------------------------------------------------------------------

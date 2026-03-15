@@ -2,7 +2,18 @@
 
 from datetime import datetime
 
-from open_octopus import Account, Consumption, PostalArea, Rate, SupplyPoint, Tariff
+from open_octopus import (
+    Account,
+    Agreement,
+    Consumption,
+    LoyaltyPoints,
+    PlannedDispatch,
+    PostalArea,
+    Product,
+    Rate,
+    SupplyPoint,
+    Tariff,
+)
 
 
 def test_account():
@@ -119,3 +130,88 @@ def test_postal_area():
     )
     assert pa.postcode == "916-0045"
     assert pa.prefecture == "福井県"
+
+
+def test_agreement():
+    """Test Agreement model."""
+    a = Agreement(
+        id=42,
+        valid_from=datetime(2024, 1, 1),
+        valid_to=None,
+        product_code="SIMPLE-2024",
+        product_name="シンプルオクトパス",
+    )
+    assert a.id == 42
+    assert a.valid_from == datetime(2024, 1, 1)
+    assert a.valid_to is None
+    assert a.product_code == "SIMPLE-2024"
+
+
+def test_agreement_defaults():
+    """Test Agreement with minimal fields."""
+    a = Agreement(id=1)
+    assert a.valid_from is None
+    assert a.product_code == ""
+    assert a.product_name == ""
+
+
+def test_product():
+    """Test Product model."""
+    p = Product(
+        code="GREEN-2024",
+        display_name="グリーンオクトパス",
+        description="100% renewable energy",
+        standing_charge=28.8,
+        rates={"standard": 25.0, "peak": 35.0},
+    )
+    assert p.code == "GREEN-2024"
+    assert p.standing_charge == 28.8
+    assert p.rates["standard"] == 25.0
+    assert p.is_available is True
+
+
+def test_product_defaults():
+    """Test Product with minimal fields."""
+    p = Product(code="TEST", display_name="Test")
+    assert p.rates == {}
+    assert p.standing_charge == 0.0
+    assert p.description == ""
+
+
+def test_loyalty_points():
+    """Test LoyaltyPoints model."""
+    lp = LoyaltyPoints(
+        balance=500,
+        ledger_entries=[{"value": 100, "reason": "SIGNUP"}],
+    )
+    assert lp.balance == 500
+    assert len(lp.ledger_entries) == 1
+
+
+def test_loyalty_points_defaults():
+    """Test LoyaltyPoints with defaults."""
+    lp = LoyaltyPoints()
+    assert lp.balance == 0
+    assert lp.ledger_entries == []
+
+
+def test_planned_dispatch():
+    """Test PlannedDispatch model."""
+    d = PlannedDispatch(
+        start=datetime(2024, 1, 1, 23, 0),
+        end=datetime(2024, 1, 2, 5, 0),
+        delta=2.5,
+        source="smart-charge",
+    )
+    assert d.delta == 2.5
+    assert d.source == "smart-charge"
+
+
+def test_planned_dispatch_defaults():
+    """Test PlannedDispatch with minimal fields."""
+    d = PlannedDispatch(
+        start=datetime(2024, 1, 1),
+        end=datetime(2024, 1, 2),
+    )
+    assert d.delta is None
+    assert d.source == ""

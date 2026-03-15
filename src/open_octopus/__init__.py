@@ -26,8 +26,12 @@ from .client import (
 )
 from .models import (
     Account,
+    Agreement,
     Consumption,
+    LoyaltyPoints,
+    PlannedDispatch,
     PostalArea,
+    Product,
     Rate,
     SupplyPoint,
     Tariff,
@@ -54,11 +58,15 @@ __all__ = [
     "ConfigurationError",
     # Models
     "Account",
+    "Agreement",
     "Consumption",
-    "Tariff",
+    "LoyaltyPoints",
+    "PlannedDispatch",
+    "PostalArea",
+    "Product",
     "Rate",
     "SupplyPoint",
-    "PostalArea",
+    "Tariff",
     # Optional
     "OctopusAgent",
     "OctopusMenuBar",

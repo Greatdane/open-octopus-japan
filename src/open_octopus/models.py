@@ -59,3 +59,44 @@ class PostalArea:
     prefecture: str
     city: str
     area: str
+
+
+# -------------------------------------------------------------------------
+# New models for extended API coverage
+# -------------------------------------------------------------------------
+
+@dataclass
+class Agreement:
+    """Electricity supply agreement with product and validity info."""
+    id: int
+    valid_from: Optional[datetime] = None
+    valid_to: Optional[datetime] = None
+    product_code: str = ""
+    product_name: str = ""
+
+
+@dataclass
+class Product:
+    """An available electricity product/tariff plan."""
+    code: str
+    display_name: str
+    description: str = ""
+    standing_charge: float = 0.0  # yen/day
+    is_available: bool = True
+    rates: dict[str, float] = field(default_factory=dict)  # band -> yen/kWh
+
+
+@dataclass
+class LoyaltyPoints:
+    """Loyalty/rewards points balance."""
+    balance: int = 0
+    ledger_entries: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class PlannedDispatch:
+    """Planned smart device dispatch window."""
+    start: datetime
+    end: datetime
+    delta: Optional[float] = None  # kW delta
+    source: str = ""
