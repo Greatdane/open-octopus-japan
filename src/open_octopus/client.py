@@ -474,6 +474,14 @@ class OctopusClient:
                                             timeOfUse
                                         }
                                     }
+                                    ... on ElectricitySteppedProduct {
+                                        consumptionCharges {
+                                            pricePerUnitIncTax
+                                            band
+                                            stepStart
+                                            stepEnd
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -499,15 +507,27 @@ class OctopusClient:
                     fca = float((product.get("fuelCostAdjustment") or {}).get("pricePerUnitIncTax") or 0)
                     rel = float((product.get("renewableEnergyLevy") or {}).get("pricePerUnitIncTax") or 0)
 
-                    rates = {}
+                    # Parse consumption charges (works for both single-step and multi-step)
+                    rates: dict[str, float] = {}
                     unit_rate = None
-                    for charge in product.get("consumptionCharges", []) or []:
+                    for charge in product.get("consumptionCharges") or []:
                         rate = float(charge.get("pricePerUnitIncTax") or 0)
                         band = charge.get("band", "")
                         tou = charge.get("timeOfUse", "")
-                        label = band or tou or "standard"
+                        step_start = charge.get("stepStart")
+                        step_end = charge.get("stepEnd")
+
+                        # Build a descriptive label for tiered rates
+                        if step_start is not None or step_end is not None:
+                            s = int(step_start) if step_start is not None else 0
+                            e = f"{int(step_end)}" if step_end is not None else "∞"
+                            label = f"{s}-{e}kWh"
+                        else:
+                            label = band or tou or "standard"
+
                         rates[label] = rate
-                        if unit_rate is None or band == "standard":
+                        # Use the highest-volume tier as the representative rate
+                        if unit_rate is None or rate > (unit_rate or 0):
                             unit_rate = rate
 
                     effective_rate = (unit_rate or 0) + fca + rel

@@ -196,11 +196,22 @@ def tariff() -> None:
 
             table.add_row("Product Code", t.product_code)
             table.add_row("Standing Charge", f"¥{t.standing_charge:.1f}/day")
-            table.add_row("Base Unit Rate", f"¥{t.rates.get('base', 0):.2f}/kWh")
+
+            # Show tiered rates if present (kWh ranges), otherwise show flat rate
+            tier_rates = {k: v for k, v in t.rates.items() if "kWh" in k}
+            if tier_rates:
+                table.add_row("", "")
+                table.add_row("[bold]Consumption Tiers[/]", "")
+                for label, rate in tier_rates.items():
+                    table.add_row(f"  {label}", f"¥{rate:.2f}/kWh")
+            elif t.rates.get("base", 0) > 0:
+                table.add_row("Base Unit Rate", f"¥{t.rates.get('base', 0):.2f}/kWh")
+
+            table.add_row("", "")
             table.add_row("Fuel Cost Adjustment", f"¥{t.rates.get('fca', 0):.2f}/kWh")
             table.add_row("Renewable Energy Levy", f"¥{t.rates.get('rel', 0):.2f}/kWh")
             table.add_row("", "─" * 15)
-            table.add_row("[bold]Effective Rate[/]", f"[bold]¥{t.peak_rate or 0:.2f}/kWh[/]")
+            table.add_row("[bold]Effective Rate (highest tier + adj)[/]", f"[bold]¥{t.peak_rate or 0:.2f}/kWh[/]")
 
             console.print(table)
 
