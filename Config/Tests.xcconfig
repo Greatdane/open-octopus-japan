@@ -1,0 +1,12 @@
+// Test target build settings
+
+PRODUCT_NAME = OctopusMenuBarUITests
+PRODUCT_BUNDLE_IDENTIFIER = com.openoctopus.menubar.uitests
+PRODUCT_MODULE_NAME = OctopusMenuBarUITests
+TEST_HOST = $(BUILT_PRODUCTS_DIR)/OctopusMenuBar.app/Contents/MacOS/OctopusMenuBar
+
+MACOSX_DEPLOYMENT_TARGET = 14.0
+SWIFT_VERSION = 6.0
+GENERATE_INFOPLIST_FILE = YES
+CODE_SIGN_IDENTITY = -
+CODE_SIGNING_REQUIRED = NO

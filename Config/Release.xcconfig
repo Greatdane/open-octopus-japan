@@ -1,0 +1,8 @@
+// Release build settings
+
+#include "Shared.xcconfig"
+
+SWIFT_OPTIMIZATION_LEVEL = -O
+SWIFT_COMPILATION_MODE = wholemodule
+CODE_SIGN_IDENTITY = -
+CODE_SIGNING_REQUIRED = NO

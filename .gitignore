@@ -31,6 +31,9 @@ playground.xcworkspace
 # .swiftpm
 
 .build/
+build/
+**/build/
+DerivedData/
 
 # CocoaPods
 #
@@ -73,3 +76,16 @@ __pycache__/
 .venv
 venv/
 env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Distribution
+dist/
+*.egg-info/
+
+# Credentials
+*.octopus.env
+requirements-dev.txt

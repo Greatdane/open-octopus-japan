@@ -18,12 +18,15 @@ public struct OctopusData: Codable, Sendable {
     var response: String?
     var monthlyProjection: Double
     var peakRate: Double?
+    var fca: Double                // Fuel cost adjustment (yen/kWh)
+    var rel: Double                // Renewable energy levy (yen/kWh)
+    var tierRates: [String: Double] // Tiered rates e.g. {"0-15kWh": 0.0, "15-120kWh": 20.08}
     var halfHourlyUsage: [Double]  // 48 slots for last 24h
     var dataDateLatest: String?   // Actual date of "today" data
     var dataDatePrevious: String? // Actual date of "yesterday" data
 
     enum CodingKeys: String, CodingKey {
-        case timestamp, rate, balance, error, response
+        case timestamp, rate, balance, error, response, fca, rel
         case balanceIsCredit = "balance_is_credit"
         case yesterdayKwh = "yesterday_kwh"
         case yesterdayCost = "yesterday_cost"
@@ -34,6 +37,7 @@ public struct OctopusData: Codable, Sendable {
         case standingCharge = "standing_charge"
         case monthlyProjection = "monthly_projection"
         case peakRate = "peak_rate"
+        case tierRates = "tier_rates"
         case halfHourlyUsage = "half_hourly_usage"
         case dataDateLatest = "data_date_latest"
         case dataDatePrevious = "data_date_previous"
@@ -49,6 +53,9 @@ public struct OctopusData: Codable, Sendable {
         hourlyUsage = []
         standingCharge = 0
         monthlyProjection = 0
+        fca = 0
+        rel = 0
+        tierRates = [:]
         halfHourlyUsage = []
     }
 }
@@ -447,17 +454,52 @@ public struct MenuBarView: View {
     private var rateCard: some View {
         CardView(icon: "chart.bar.fill", title: "RATES") {
             VStack(alignment: .leading, spacing: 6) {
-                // Rate row
-                HStack {
-                    Circle()
-                        .fill(Color.orange)
-                        .frame(width: 6, height: 6)
-                    Text("Rate")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                    Spacer()
-                    Text(String(format: "¥%.1f/kWh", state.data.peakRate ?? state.data.rate ?? 0))
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                // Tiered rates (if available)
+                if !state.data.tierRates.isEmpty {
+                    let sortedTiers = state.data.tierRates.sorted { a, b in
+                        // Parse the start kWh from keys like "0-15kWh"
+                        let aStart = Double(a.key.split(separator: "-").first ?? "0") ?? 0
+                        let bStart = Double(b.key.split(separator: "-").first ?? "0") ?? 0
+                        return aStart < bStart
+                    }
+                    ForEach(sortedTiers, id: \.key) { tier, rate in
+                        HStack {
+                            Text(tier)
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Text(String(format: "¥%.2f/kWh", rate))
+                                .font(.system(size: 10, design: .monospaced))
+                        }
+                    }
+                } else {
+                    // Flat rate fallback
+                    HStack {
+                        Circle()
+                            .fill(Color.orange)
+                            .frame(width: 6, height: 6)
+                        Text("Rate")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text(String(format: "¥%.1f/kWh", state.data.peakRate ?? state.data.rate ?? 0))
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    }
+                }
+
+                Divider()
+
+                // Adjustments
+                if state.data.fca > 0 || state.data.rel > 0 {
+                    HStack {
+                        Text("FCA + REL")
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text(String(format: "+¥%.2f/kWh", state.data.fca + state.data.rel))
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(.secondary)
+                    }
                 }
 
                 // Standing charge
@@ -466,11 +508,10 @@ public struct MenuBarView: View {
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
                     Spacer()
-                    Text(String(format: "¥%.0f/day", state.data.standingCharge))
+                    Text(String(format: "¥%.1f/day", state.data.standingCharge))
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundColor(.secondary)
                 }
-                .padding(.top, 4)
             }
         }
     }
@@ -605,21 +646,6 @@ public struct MenuBarView: View {
                     }
                 }
 
-                // Estimated savings (rough calculation)
-                if state.data.yesterdayCost > 0 {
-                    let standardRate = 30.0  // Average standard rate (yen/kWh)
-                    let savingsEstimate = (state.data.yesterdayKwh * standardRate) - state.data.yesterdayCost
-                    if savingsEstimate > 0 {
-                        HStack(spacing: 4) {
-                            Image(systemName: "arrow.down.circle.fill")
-                                .font(.system(size: 10))
-                                .foregroundColor(.green)
-                            Text(String(format: "Saved ~¥%.0f yesterday vs standard", savingsEstimate))
-                                .font(.system(size: 11))
-                                .foregroundColor(.green)
-                        }
-                    }
-                }
             }
         }
         .padding(12)
@@ -711,7 +737,7 @@ public struct MenuBarView: View {
 
             // Branding + tariff
             HStack(spacing: 4) {
-                Button(action: { NSWorkspace.shared.open(URL(string: "https://github.com/abracadabra50/open-octopus")!) }) {
+                Button(action: { NSWorkspace.shared.open(URL(string: "https://github.com/Greatdane/open-octopus-japan")!) }) {
                     HStack(spacing: 2) {
                         Text("🐙")
                             .font(.system(size: 10))
@@ -887,14 +913,6 @@ public struct MenuBarView: View {
             return parts.prefix(2).joined(separator: "-")
         }
         return name
-    }
-
-    private func calculateRateProgress() -> Double {
-        // Estimate progress through current rate period
-        // For a 30-min period, calculate how far through we are
-        let totalSeconds = 1800.0  // 30 minutes typical for Agile
-        let elapsed = totalSeconds - Double(state.data.rateEndsInSeconds)
-        return max(0, min(1, elapsed / totalSeconds))
     }
 
     private func formatSessionDate(_ iso: String) -> String {
