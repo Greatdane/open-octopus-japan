@@ -181,6 +181,195 @@ def status() -> None:
 
 
 @app.command()
+def tariff() -> None:
+    """Show current tariff details with rate breakdown."""
+    async def _run() -> None:
+        async with get_client() as client:
+            t = await client.get_tariff()
+            if not t:
+                console.print("[dim]No tariff information available.[/]")
+                return
+
+            table = Table(title=f"Tariff: {t.name}")
+            table.add_column("Component", style="cyan")
+            table.add_column("Rate", justify="right")
+
+            table.add_row("Product Code", t.product_code)
+            table.add_row("Standing Charge", f"¥{t.standing_charge:.1f}/day")
+            table.add_row("Base Unit Rate", f"¥{t.rates.get('base', 0):.2f}/kWh")
+            table.add_row("Fuel Cost Adjustment", f"¥{t.rates.get('fca', 0):.2f}/kWh")
+            table.add_row("Renewable Energy Levy", f"¥{t.rates.get('rel', 0):.2f}/kWh")
+            table.add_row("", "─" * 15)
+            table.add_row("[bold]Effective Rate[/]", f"[bold]¥{t.peak_rate or 0:.2f}/kWh[/]")
+
+            console.print(table)
+
+    run_async(_run())
+
+
+@app.command()
+def supply() -> None:
+    """Show supply point and meter details."""
+    async def _run() -> None:
+        async with get_client() as client:
+            sps = await client.get_supply_points()
+            if not sps:
+                console.print("[dim]No supply points found.[/]")
+                return
+
+            for sp in sps:
+                info = (
+                    f"SPIN: {sp.spin}\n"
+                    f"Status: {sp.status}\n"
+                    f"Meter: {sp.meter_serial or 'N/A'}"
+                )
+                console.print(Panel(info, title="Supply Point", border_style="cyan"))
+
+                if sp.agreements:
+                    table = Table(title="Agreements")
+                    table.add_column("ID")
+                    table.add_column("Product")
+                    table.add_column("From")
+                    table.add_column("To")
+
+                    for agr in sp.agreements:
+                        table.add_row(
+                            str(agr.get("id", "")),
+                            agr.get("product_name", ""),
+                            str(agr.get("valid_from", ""))[:10],
+                            str(agr.get("valid_to", "—") or "—")[:10],
+                        )
+                    console.print(table)
+
+    run_async(_run())
+
+
+@app.command()
+def agreements() -> None:
+    """Show current and past electricity agreements."""
+    async def _run() -> None:
+        async with get_client() as client:
+            agrs = await client.get_agreements()
+            if not agrs:
+                console.print("[dim]No agreements found.[/]")
+                return
+
+            table = Table(title="Electricity Agreements")
+            table.add_column("ID", style="dim")
+            table.add_column("Product", style="cyan")
+            table.add_column("Code")
+            table.add_column("Valid From")
+            table.add_column("Valid To")
+
+            for a in agrs:
+                table.add_row(
+                    str(a.id),
+                    a.product_name,
+                    a.product_code,
+                    a.valid_from.strftime("%Y-%m-%d") if a.valid_from else "—",
+                    a.valid_to.strftime("%Y-%m-%d") if a.valid_to else "ongoing",
+                )
+
+            console.print(table)
+
+    run_async(_run())
+
+
+@app.command()
+def products(
+    postcode: Optional[str] = typer.Option(None, "--postcode", "-p", help="Filter by Japanese postcode"),
+) -> None:
+    """Browse available electricity plans."""
+    async def _run() -> None:
+        async with get_client() as client:
+            prods = await client.get_available_products(postcode=postcode)
+            if not prods:
+                console.print("[dim]No products available (or endpoint not supported).[/]")
+                return
+
+            table = Table(title="Available Products")
+            table.add_column("Name", style="cyan")
+            table.add_column("Code", style="dim")
+            table.add_column("Standing", justify="right")
+            table.add_column("Rates", justify="right")
+
+            for p in prods:
+                rate_str = ", ".join(f"{k}: ¥{v:.1f}" for k, v in p.rates.items()) if p.rates else "—"
+                table.add_row(
+                    p.display_name,
+                    p.code,
+                    f"¥{p.standing_charge:.1f}/day",
+                    rate_str,
+                )
+
+            console.print(table)
+
+    run_async(_run())
+
+
+@app.command()
+def billing(
+    limit: int = typer.Option(10, "--limit", "-n", help="Number of transactions"),
+) -> None:
+    """Show recent billing transactions."""
+    async def _run() -> None:
+        async with get_client() as client:
+            txns = await client.get_billing(limit=limit)
+            if not txns:
+                console.print("[dim]No billing data available (or endpoint not supported).[/]")
+                return
+
+            table = Table(title="Billing Transactions")
+            table.add_column("Date", style="cyan")
+            table.add_column("Type")
+            table.add_column("Description")
+            table.add_column("Amount", justify="right")
+
+            for t in txns:
+                amount = t.get("amount", 0)
+                color = "green" if amount < 0 else "yellow"
+                table.add_row(
+                    str(t.get("posted_date", ""))[:10],
+                    t.get("type", ""),
+                    t.get("title", ""),
+                    f"[{color}]¥{abs(amount):.0f}[/]",
+                )
+
+            console.print(table)
+
+    run_async(_run())
+
+
+@app.command()
+def loyalty() -> None:
+    """Show loyalty points balance (if available)."""
+    async def _run() -> None:
+        async with get_client() as client:
+            points = await client.get_loyalty_points()
+            if points is None:
+                console.print("[dim]Loyalty program not available on this account.[/]")
+                return
+
+            console.print(f"[bold]Loyalty Points:[/] {points.balance}")
+
+            if points.ledger_entries:
+                table = Table(title="Recent Activity")
+                table.add_column("Points", justify="right")
+                table.add_column("Balance", justify="right")
+                table.add_column("Reason")
+
+                for entry in points.ledger_entries[:10]:
+                    table.add_row(
+                        str(entry.get("value", "")),
+                        str(entry.get("balance", "")),
+                        entry.get("reason", ""),
+                    )
+                console.print(table)
+
+    run_async(_run())
+
+
+@app.command()
 def tui(refresh: int = typer.Option(60, "--refresh", "-r", help="Refresh interval in seconds")) -> None:
     """Interactive terminal dashboard with live updates."""
 

@@ -69,6 +69,29 @@ OCTOPUS_TOOLS = [
             "required": []
         }
     },
+    {
+        "name": "get_supply_details",
+        "description": "Get supply point details including meter serial number, SPIN, and current agreements",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    },
+    {
+        "name": "get_available_products",
+        "description": "Browse available electricity plans/products, optionally filtered by postcode",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "postcode": {
+                    "type": "string",
+                    "description": "Japanese postcode to filter by region (optional)"
+                }
+            },
+            "required": []
+        }
+    },
 ]
 
 
@@ -173,6 +196,35 @@ class OctopusAgent:
                     "rates": tariff.rates,
                 }
 
+            elif name == "get_supply_details":
+                sps = await self.octopus.get_supply_points()
+                return {
+                    "supply_points": [
+                        {
+                            "spin": sp.spin,
+                            "status": sp.status,
+                            "meter_serial": sp.meter_serial,
+                            "agreements": sp.agreements,
+                        }
+                        for sp in sps
+                    ]
+                }
+
+            elif name == "get_available_products":
+                postcode = input_data.get("postcode")
+                prods = await self.octopus.get_available_products(postcode=postcode)
+                return {
+                    "products": [
+                        {
+                            "name": p.display_name,
+                            "code": p.code,
+                            "standing_charge_yen_per_day": p.standing_charge,
+                            "rates": p.rates,
+                        }
+                        for p in prods
+                    ]
+                }
+
             else:
                 return {"error": f"Unknown tool: {name}"}
 
@@ -187,12 +239,14 @@ class OctopusAgent:
             Natural language response from Claude
         """
         system_prompt = """You are an expert assistant for Octopus Energy Japan customers.
-You help users understand their electricity usage, billing, and tariff.
+You help users understand their electricity usage, billing, tariff, and supply details.
 
 Key context:
 - All prices are in Japanese Yen (¥)
 - Balance shown as negative means the customer has credit
 - Octopus Energy Japan provides electricity only (no gas)
+- Effective rate = base unit rate + fuel cost adjustment + renewable energy levy
+- You can look up supply point details, meter info, and browse available products
 
 When answering:
 - Be concise and friendly
