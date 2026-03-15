@@ -37,6 +37,8 @@ src/open_octopus/
 tests/
 ├── test_models.py       # Unit tests for all data models
 └── test_client.py       # Client tests with mocked GraphQL responses
+docs/
+└── japan-api-reference.md  # Complete Japan GraphQL API reference
 OctopusMenuBar/          # Xcode project (Swift macOS menu bar app, future work)
 OctopusMenuBarPackage/   # SwiftUI views for the menu bar app (future work)
 ```
@@ -47,6 +49,7 @@ OctopusMenuBarPackage/   # SwiftUI views for the menu bar app (future work)
 - **Working queries:** `obtainKrakenToken`, `viewer`, `account`, `measurements` (consumption), `halfHourlyReadings` (consumption with cost), `electricitySupplyPoints.agreements.product`, `postalAreas` (public)
 - **Not available on Japan API:** `billingTransactions`, `products`, `loyaltyPointLedgers`, `plannedDispatches` (all handled gracefully)
 - **Consumption:** `halfHourlyReadings` tried first (returns `costEstimate`), automatic fallback to `measurements` (cursor-paginated)
+- **Product types:** `ElectricitySteppedProduct` (tiered pricing, verified), `ElectricitySingleStepProduct` (flat rate). See `docs/japan-api-reference.md` for complete API reference
 - **Pagination:** Cursor-based, max 100 nodes per request (API limit)
 - **Rate limits:** 200 complexity points/request, 50K points/hour
 

@@ -104,17 +104,25 @@ async with OctopusClient(email="user@example.com", password="xxx") as client:
 |----------|--------|-------------|
 | Account info & balance | Working | `octopus account` |
 | Consumption (half-hourly) | Working | `octopus usage` |
-| Tariff & rates | Working | `octopus tariff` |
+| Tariff & rates (tiered) | Working | `octopus tariff` |
 | Supply points & meters | Working | `octopus supply` |
 | Agreements | Working | `octopus agreements` |
 | Postal areas (public) | Working | — |
 | Billing transactions | Not available on Japan API | `octopus billing` |
 | Available products | Not available on Japan API | `octopus products` |
-| Loyalty points | Not available on this account | `octopus loyalty` |
+| Loyalty points | Not available | `octopus loyalty` |
 | Planned dispatches | Client method only | — |
 | Communication prefs | Client method only | — |
 | Product switch (mutation) | Client method only | — |
 | Amperage change (mutation) | Client method only | — |
+
+### Japan-specific GraphQL Types
+
+The Japan API uses different product types than the UK API. See [docs/japan-api-reference.md](docs/japan-api-reference.md) for a complete API reference including:
+- `ElectricitySteppedProduct` — tiered pricing with kWh ranges
+- `ElectricitySingleStepProduct` — flat rate pricing
+- Japan-specific fields: `fuelCostAdjustment`, `renewableEnergyLevy`, `stepStart`/`stepEnd`
+- Which endpoints work and which return 400 errors
 
 ## Development
 
