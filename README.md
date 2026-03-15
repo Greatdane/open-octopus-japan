@@ -33,7 +33,7 @@ octopus usage --start 2026-02-15               # From date to today
 
 # Browse & explore
 octopus products                # Available electricity plans
-octopus products -p 604-8441   # Plans for your postcode
+octopus products -p 100-0001   # Plans for your postcode
 octopus loyalty                 # Loyalty points (if available)
 
 # Dashboard
@@ -95,7 +95,7 @@ async with OctopusClient(email="user@example.com", password="xxx") as client:
     agreements = await client.get_agreements()
 
     # Public queries (no auth required)
-    areas = await client.get_postal_areas("604-8441")
+    areas = await client.get_postal_areas("100-0001")
 ```
 
 ## API Coverage

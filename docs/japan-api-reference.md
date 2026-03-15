@@ -178,10 +178,10 @@ query($accountNumber: String!, $fromDatetime: DateTime, $toDatetime: DateTime) {
 ```graphql
 query($postcode: String!) {
   postalAreas(postcode: $postcode) {
-    postcode    # "604-8441"
-    prefecture  # "京都府"
-    city        # "京都市中京区"
-    area        # "西ノ京..."
+    postcode    # "100-0001"
+    prefecture  # "東京都"
+    city        # "千代田区"
+    area        # "千代田"
   }
 }
 ```
