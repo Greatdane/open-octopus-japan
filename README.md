@@ -7,13 +7,32 @@
 
 ## What's Included
 
-| Component | Description |
-|-----------|-------------|
-| **Python Client** | Async GraphQL client for the Octopus Energy Japan API |
-| **CLI Tools** | Terminal commands for account, usage, tariff, billing, and more |
-| **TUI** | Interactive terminal dashboard with live updates |
-| **AI Assistant** | Ask questions about your energy usage in natural language |
-| **Menu Bar App** | Native macOS app *(coming soon)* |
+| Component | Directory | Description |
+|-----------|-----------|-------------|
+| **Python Client** | `cli/` | Async GraphQL client for the Octopus Energy Japan API |
+| **CLI Tools** | `cli/` | Terminal commands for account, usage, tariff, billing, and more |
+| **TUI** | `cli/` | Interactive terminal dashboard with live updates |
+| **AI Assistant** | `cli/` | Ask questions about your energy usage in natural language |
+| **Menu Bar App** | `macos/` | Native macOS menu bar app (SwiftUI) |
+
+## Project Structure
+
+```
+open-octopus-japan/
+├── cli/                          # Python package + CLI
+│   ├── pyproject.toml
+│   ├── src/open_octopus/         # Library source
+│   └── tests/                    # Unit + integration tests
+├── macos/                        # macOS menu bar app
+│   ├── OctopusMenuBar/           # App shell
+│   ├── OctopusMenuBarPackage/    # SwiftUI views
+│   ├── OctopusMenuBar.xcodeproj/ # Xcode project
+│   └── Config/                   # Build configurations
+├── docs/                         # API reference + screenshots
+├── README.md
+├── CLAUDE.md
+└── .env.example
+```
 
 ## CLI Commands
 
@@ -52,6 +71,7 @@ octopus-ask "What plans are available?"
 ## Installation
 
 ```bash
+cd cli
 pip install -e ".[all,dev]"
 ```
 
@@ -71,6 +91,15 @@ Or use environment variables:
 export OCTOPUS_EMAIL="your-email@example.com"
 export OCTOPUS_PASSWORD="your-password"
 ```
+
+### macOS Menu Bar App
+
+```bash
+cd macos
+xcodebuild -scheme OctopusMenuBar -destination 'platform=macOS,arch=arm64' build
+```
+
+Or open `macos/OctopusMenuBar.xcodeproj` in Xcode and build from there.
 
 ## Python Client
 
@@ -127,6 +156,8 @@ The Japan API uses different product types than the UK API. See [docs/japan-api-
 ## Development
 
 ```bash
+cd cli
+
 # Run tests
 pytest
 

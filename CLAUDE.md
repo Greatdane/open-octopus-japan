@@ -1,12 +1,13 @@
 # Open Octopus Japan
 
 ## Overview
-Python client and CLI for the **Octopus Energy Japan** GraphQL API (`api.oejp-kraken.energy`).
+Python client and CLI for the **Octopus Energy Japan** GraphQL API (`api.oejp-kraken.energy`), plus a native macOS menu bar app.
 Forked from the UK version ([abracadabra50/open-octopus](https://github.com/abracadabra50/open-octopus)) and adapted for Japan-only use.
 
 ## Quick Start
 ```bash
 # Install in dev mode
+cd cli
 pip install -e ".[all,dev]"
 
 # Set credentials
@@ -23,24 +24,35 @@ octopus tui
 
 ## Project Structure
 ```
-src/open_octopus/
-├── __init__.py          # Package exports (10 models, 4 exceptions, client)
-├── models.py            # Dataclasses: Account, Consumption, Tariff, Rate,
-│                        #   SupplyPoint, PostalArea, Agreement, Product,
-│                        #   LoyaltyPoints, PlannedDispatch
-├── client.py            # OctopusClient - async GraphQL client (core)
-├── cli.py               # Typer CLI commands (account, usage, tariff, supply,
-│                        #   agreements, products, billing, loyalty, status, tui)
-├── agent.py             # Claude AI agent with tool use (octopus-ask)
-├── menubar.py           # Python rumps macOS menu bar app (future work)
-└── menubar_server.py    # JSON stdin/stdout bridge for Swift menu bar app (future work)
-tests/
-├── test_models.py       # Unit tests for all data models
-└── test_client.py       # Client tests with mocked GraphQL responses
-docs/
-└── japan-api-reference.md  # Complete Japan GraphQL API reference
-OctopusMenuBar/          # Xcode project (Swift macOS menu bar app, future work)
-OctopusMenuBarPackage/   # SwiftUI views for the menu bar app (future work)
+open-octopus-japan/
+├── cli/                             # Python package + CLI
+│   ├── pyproject.toml               # Package config, dependencies, entry points
+│   ├── src/open_octopus/
+│   │   ├── __init__.py              # Package exports (10 models, 4 exceptions, client)
+│   │   ├── models.py                # Dataclasses: Account, Consumption, Tariff, Rate,
+│   │   │                            #   SupplyPoint, PostalArea, Agreement, Product,
+│   │   │                            #   LoyaltyPoints, PlannedDispatch
+│   │   ├── client.py                # OctopusClient - async GraphQL client (core)
+│   │   ├── cli.py                   # Typer CLI commands (account, usage, tariff, supply,
+│   │   │                            #   agreements, products, billing, loyalty, status, tui)
+│   │   ├── agent.py                 # Claude AI agent with tool use (octopus-ask)
+│   │   ├── menubar.py               # Python rumps macOS menu bar app (legacy)
+│   │   └── menubar_server.py        # JSON stdin/stdout bridge for Swift menu bar app
+│   └── tests/
+│       ├── test_models.py           # Unit tests for all data models
+│       └── test_client.py           # Client tests with mocked GraphQL responses
+├── macos/                           # macOS menu bar app (SwiftUI)
+│   ├── OctopusMenuBar/              # App shell (entry point + assets)
+│   ├── OctopusMenuBar.xcodeproj/    # Xcode project
+│   ├── OctopusMenuBarPackage/       # SwiftUI views and PythonBridge
+│   └── Config/                      # Xcode build configurations (.xcconfig)
+├── docs/
+│   ├── japan-api-reference.md       # Complete Japan GraphQL API reference
+│   └── menubar-screenshot.png
+├── README.md
+├── CLAUDE.md
+├── .env.example
+└── .gitignore
 ```
 
 ## API Details
@@ -78,6 +90,8 @@ OctopusMenuBarPackage/   # SwiftUI views for the menu bar app (future work)
 
 ## Development
 ```bash
+cd cli
+
 # Run tests (43 tests)
 pytest
 
@@ -86,6 +100,10 @@ ruff check src/ tests/
 
 # Type check
 mypy src/open_octopus/ --ignore-missing-imports
+
+# Build macOS app
+cd ../macos
+xcodebuild -scheme OctopusMenuBar -destination 'platform=macOS,arch=arm64' build
 ```
 
 ## Key Conventions
@@ -93,6 +111,5 @@ mypy src/open_octopus/ --ignore-missing-imports
 - Electricity only - no gas support in Japan
 - Account number auto-discovered from credentials (no MPAN/meter serial needed)
 - Effective rate = base unit rate + fuel cost adjustment + renewable energy levy
-- Do NOT remove menubar/Swift code - macOS app is planned future work
 - Speculative endpoints use `_graphql_safe()` which catches HTTP 400/GraphQL errors
 - External reference repos (oejp-api-example, tako-mcp, octopus-bot) are untested - verify API patterns before adopting
