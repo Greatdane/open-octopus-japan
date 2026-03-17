@@ -21,6 +21,8 @@ public struct OctopusData: Codable, Sendable {
     var fca: Double                // Fuel cost adjustment (yen/kWh)
     var rel: Double                // Renewable energy levy (yen/kWh)
     var tierRates: [String: Double] // Tiered rates e.g. {"0-15kWh": 0.0, "15-120kWh": 20.08}
+    var billingCycleDay: Int       // Day of month billing resets (from agreement)
+    var billingCycleKwh: Double    // kWh used so far this billing cycle
     var halfHourlyUsage: [Double]  // 48 slots for last 24h
     var dataDateLatest: String?   // Actual date of "today" data
     var dataDatePrevious: String? // Actual date of "yesterday" data
@@ -38,6 +40,8 @@ public struct OctopusData: Codable, Sendable {
         case monthlyProjection = "monthly_projection"
         case peakRate = "peak_rate"
         case tierRates = "tier_rates"
+        case billingCycleDay = "billing_cycle_day"
+        case billingCycleKwh = "billing_cycle_kwh"
         case halfHourlyUsage = "half_hourly_usage"
         case dataDateLatest = "data_date_latest"
         case dataDatePrevious = "data_date_previous"
@@ -56,8 +60,25 @@ public struct OctopusData: Codable, Sendable {
         fca = 0
         rel = 0
         tierRates = [:]
+        billingCycleDay = 1
+        billingCycleKwh = 0
         halfHourlyUsage = []
     }
+}
+
+// MARK: - History Data
+
+public struct HistoryEntry: Codable, Identifiable, Sendable {
+    var date: String
+    var kwh: Double
+    var cost: Double
+
+    public var id: String { date }
+}
+
+public struct HistoryResponse: Codable, Sendable {
+    var history: [HistoryEntry]?
+    var error: String?
 }
 
 // MARK: - Settings
@@ -97,6 +118,9 @@ public class AppState: ObservableObject {
     @Published public var aiQuery = ""
     @Published public var aiResponse: String?
     @Published public var isAskingAI = false
+    @Published public var historyEntries: [HistoryEntry] = []
+    @Published public var showHistory = true
+    @Published public var showAI = false
     @AppStorage("menuBarDisplayMode") public var displayMode: MenuBarDisplayMode = .auto
     @AppStorage("usageDisplayMode") public var usageMode: UsageDisplayMode = .halfHourly
 
@@ -133,10 +157,26 @@ public class AppState: ObservableObject {
     }
 
     private func setupBridge() {
-        pythonBridge = PythonBridge { [weak self] data in
-            Task { @MainActor in self?.handleData(data) }
-        }
+        pythonBridge = PythonBridge(
+            onData: { [weak self] data in
+                Task { @MainActor in self?.handleData(data) }
+            },
+            onHistory: { [weak self] response in
+                Task { @MainActor in
+                    self?.historyEntries = response.history ?? []
+                }
+            }
+        )
         pythonBridge?.start()
+
+        // Auto-fetch history since it's shown by default
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            self?.fetchHistory()
+        }
+    }
+
+    public func fetchHistory(days: Int = 30) {
+        pythonBridge?.sendCommand(["command": "history", "days": days])
     }
 
     private func startAutoRefresh() {
@@ -186,9 +226,14 @@ public final class PythonBridge: @unchecked Sendable {
     private var outputPipe: Pipe?
     private var inputPipe: Pipe?
     private let onData: @Sendable (OctopusData) -> Void
+    private let onHistory: @Sendable (HistoryResponse) -> Void
 
-    public init(onData: @escaping @Sendable (OctopusData) -> Void) {
+    public init(
+        onData: @escaping @Sendable (OctopusData) -> Void,
+        onHistory: @escaping @Sendable (HistoryResponse) -> Void = { _ in }
+    ) {
         self.onData = onData
+        self.onHistory = onHistory
     }
 
     public func start() {
@@ -218,30 +263,43 @@ public final class PythonBridge: @unchecked Sendable {
         }
         process?.environment = env
 
-        let handler = self.onData
+        let dataHandler = self.onData
+        let historyHandler = self.onHistory
         outputPipe?.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
-            if !data.isEmpty { Self.processOutput(data, handler: handler) }
+            if !data.isEmpty { Self.processOutput(data, dataHandler: dataHandler, historyHandler: historyHandler) }
         }
 
         try? process?.run()
     }
 
-    private static func processOutput(_ data: Data, handler: @escaping @Sendable (OctopusData) -> Void) {
+    private static func processOutput(
+        _ data: Data,
+        dataHandler: @escaping @Sendable (OctopusData) -> Void,
+        historyHandler: @escaping @Sendable (HistoryResponse) -> Void
+    ) {
         guard let string = String(data: data, encoding: .utf8) else { return }
         for line in string.components(separatedBy: .newlines) where !line.isEmpty {
-            if let octopusData = try? JSONDecoder().decode(OctopusData.self, from: Data(line.utf8)) {
-                handler(octopusData)
+            let lineData = Data(line.utf8)
+            // Try history response first (has "history" key)
+            if let historyResp = try? JSONDecoder().decode(HistoryResponse.self, from: lineData),
+               historyResp.history != nil {
+                historyHandler(historyResp)
+            } else if let octopusData = try? JSONDecoder().decode(OctopusData.self, from: lineData) {
+                dataHandler(octopusData)
             }
         }
     }
 
     private func findServerPath() -> String {
+        let home = NSHomeDirectory()
         let paths = [
-            "/Library/Frameworks/Python.framework/Versions/3.12/bin/octopus-server",
+            "\(home)/open-octopus-japan/venv/bin/octopus-server",
             "/opt/homebrew/bin/octopus-server",
             "/usr/local/bin/octopus-server",
-            "\(NSHomeDirectory())/.local/bin/octopus-server"
+            "\(home)/.local/bin/octopus-server",
+            "/Library/Frameworks/Python.framework/Versions/3.14/bin/octopus-server",
+            "/Library/Frameworks/Python.framework/Versions/3.12/bin/octopus-server",
         ]
         return paths.first { FileManager.default.fileExists(atPath: $0) } ?? "octopus-server"
     }
@@ -387,8 +445,13 @@ public struct MenuBarView: View {
                     VStack(spacing: 8) {
                         usageCard
                         rateCard
+                        if state.showHistory {
+                            historyCard
+                        }
                         insightsCard
-                        aiCard
+                        if state.showAI {
+                            aiCard
+                        }
                     }
                     .padding(.vertical, 8)
                 }
@@ -397,7 +460,9 @@ public struct MenuBarView: View {
                 footer
             }
         }
-        .frame(width: 320, height: 750)
+        .frame(width: 320)
+        .frame(maxHeight: 700)
+        .fixedSize(horizontal: false, vertical: true)
         .background(Color(NSColor.windowBackgroundColor))
     }
 
@@ -418,6 +483,11 @@ public struct MenuBarView: View {
                         Text("Rate per kWh")
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
+                        if state.data.billingCycleKwh > 0 {
+                            Text(String(format: "%.0f kWh this cycle", state.data.billingCycleKwh))
+                                .font(.system(size: 9))
+                                .foregroundColor(.secondary.opacity(0.7))
+                        }
                     }
                 }
 
@@ -717,6 +787,73 @@ public struct MenuBarView: View {
         state.askAI(query)
     }
 
+    // MARK: - History View
+
+    private var historyCard: some View {
+        CardView(icon: "clock.arrow.circlepath", title: "HISTORY") {
+            VStack(alignment: .leading, spacing: 6) {
+                if state.historyEntries.isEmpty {
+                    Text("No history yet. Data is logged on each refresh.")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                } else {
+                    // Bar chart of recent days
+                    let entries = Array(state.historyEntries.prefix(14))
+                    let maxKwh = entries.map(\.kwh).max() ?? 1
+
+                    ForEach(entries) { entry in
+                        HStack(spacing: 6) {
+                            Text(formatHistoryDate(entry.date))
+                                .font(.system(size: 9, design: .monospaced))
+                                .foregroundColor(.secondary)
+                                .frame(width: 45, alignment: .leading)
+
+                            GeometryReader { geo in
+                                RoundedRectangle(cornerRadius: 2)
+                                    .fill(Color.blue.opacity(0.6))
+                                    .frame(width: max(2, geo.size.width * CGFloat(entry.kwh / maxKwh)))
+                            }
+                            .frame(height: 10)
+
+                            Text(String(format: "%.1f kWh", entry.kwh))
+                                .font(.system(size: 9, design: .monospaced))
+                                .foregroundColor(.secondary)
+                                .frame(width: 55, alignment: .trailing)
+
+                            Text(String(format: "¥%.0f", entry.cost))
+                                .font(.system(size: 9, design: .monospaced))
+                                .frame(width: 40, alignment: .trailing)
+                        }
+                    }
+
+                    // Summary
+                    let totalKwh = entries.map(\.kwh).reduce(0, +)
+                    let totalCost = entries.map(\.cost).reduce(0, +)
+                    let avgKwh = totalKwh / Double(entries.count)
+
+                    Divider()
+                    HStack {
+                        Text(String(format: "Avg: %.1f kWh/day", avgKwh))
+                            .font(.system(size: 9))
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text(String(format: "Total: ¥%.0f", totalCost))
+                            .font(.system(size: 9, weight: .medium))
+                    }
+                }
+            }
+        }
+    }
+
+    private func formatHistoryDate(_ dateStr: String) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        guard let date = formatter.date(from: dateStr) else { return dateStr }
+        formatter.dateFormat = "M/d (E)"
+        formatter.locale = Locale(identifier: "ja_JP")
+        return formatter.string(from: date)
+    }
+
     // MARK: - Footer
 
     private var footer: some View {
@@ -735,28 +872,40 @@ public struct MenuBarView: View {
 
             Spacer()
 
-            // Branding + tariff
-            HStack(spacing: 4) {
-                Button(action: { NSWorkspace.shared.open(URL(string: "https://github.com/Greatdane/open-octopus-japan")!) }) {
-                    HStack(spacing: 2) {
-                        Text("🐙")
-                            .font(.system(size: 10))
-                        Text("Open Octopus")
-                            .font(.system(size: 9, weight: .medium))
-                            .foregroundColor(.secondary)
-                    }
-                }
-                .buttonStyle(.plain)
-                if let tariff = state.data.tariffName {
-                    Text("·")
-                        .foregroundColor(.secondary)
-                    Text(formatTariffName(tariff))
-                        .font(.system(size: 9))
+            // Branding
+            Button(action: { NSWorkspace.shared.open(URL(string: "https://github.com/Greatdane/open-octopus-japan")!) }) {
+                HStack(spacing: 2) {
+                    Text("🐙")
+                        .font(.system(size: 10))
+                    Text("Open Octopus Japan")
+                        .font(.system(size: 9, weight: .medium))
                         .foregroundColor(.secondary)
                 }
             }
+            .buttonStyle(.plain)
 
             Spacer()
+
+            Button(action: {
+                state.showHistory.toggle()
+                if state.showHistory && state.historyEntries.isEmpty {
+                    state.fetchHistory()
+                }
+            }) {
+                Image(systemName: state.showHistory ? "clock.fill" : "clock")
+                    .font(.system(size: 11))
+                    .foregroundColor(state.showHistory ? .accentColor : .secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Usage History")
+
+            Button(action: { state.showAI.toggle() }) {
+                Image(systemName: state.showAI ? "sparkles" : "sparkles")
+                    .font(.system(size: 11))
+                    .foregroundColor(state.showAI ? .accentColor : .secondary)
+            }
+            .buttonStyle(.plain)
+            .help("AI Assistant")
 
             Button(action: { NSWorkspace.shared.open(URL(string: "https://octopusenergy.co.jp/")!) }) {
                 Image(systemName: "arrow.up.right.square")

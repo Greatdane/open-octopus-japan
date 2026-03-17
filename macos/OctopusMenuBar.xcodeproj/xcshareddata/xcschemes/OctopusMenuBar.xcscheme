@@ -41,7 +41,7 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "8BC265732DEDD3F500F279A4"
-               BuildableName = "OctopusMenuBar.xctest"
+               BuildableName = "OctopusMenuBarUITests.xctest"
                BlueprintName = "OctopusMenuBarUITests"
                ReferencedContainer = "container:OctopusMenuBar.xcodeproj">
             </BuildableReference>

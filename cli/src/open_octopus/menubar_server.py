@@ -5,11 +5,13 @@ Communicates with Swift app via stdin/stdout JSON.
 """
 
 import asyncio
+import csv
 import json
 import os
 import sys
 from collections import defaultdict
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Optional
 
 from .client import OctopusClient
@@ -96,11 +98,22 @@ class MenuBarServer:
                     rate_info = self.client.get_current_rate(tariff)
                     result["rate"] = rate_info.rate
 
+                # Get agreement start date for billing cycle
+                billing_day = 1
+                try:
+                    agreements = await self.client.get_agreements()
+                    if agreements and agreements[0].valid_from:
+                        billing_day = agreements[0].valid_from.day
+                except Exception:
+                    pass
+                result["billing_cycle_day"] = billing_day
+
                 # Consumption data
                 try:
-                    consumption = await self.client.get_consumption(periods=96)
+                    consumption = await self.client.get_consumption(periods=8 * 48)
 
                     daily = defaultdict(float)
+                    daily_readings = defaultdict(int)
                     hourly_by_day = defaultdict(lambda: defaultdict(float))
                     half_hourly_by_day = defaultdict(lambda: defaultdict(float))
 
@@ -110,8 +123,15 @@ class MenuBarServer:
                         minute = c.start.minute
                         slot = hour * 2 + (1 if minute >= 30 else 0)
                         daily[day] += c.kwh
+                        daily_readings[day] += 1
                         hourly_by_day[day][hour] += c.kwh
                         half_hourly_by_day[day][slot] = c.kwh
+
+                    # Drop partial first day (< 24 readings = incomplete)
+                    earliest = min(daily.keys()) if daily else None
+                    if earliest and daily_readings[earliest] < 24:
+                        del daily[earliest]
+                        daily_readings.pop(earliest, None)
 
                     sorted_days = sorted(daily.keys(), reverse=True)
                     today = datetime.now().strftime("%Y-%m-%d")
@@ -126,16 +146,33 @@ class MenuBarServer:
                     result["data_date_latest"] = display_today
                     result["data_date_previous"] = display_yesterday
 
+                    # Calculate cumulative kWh from billing cycle start
+                    # so daily costs use the correct tier position
+                    billing_start = self._billing_period_start(billing_day)
+                    billing_start_str = billing_start.strftime("%Y-%m-%d")
+                    cycle_days = sorted(
+                        d for d in daily.keys() if d >= billing_start_str
+                    )
+
+                    # Build cumulative usage before each day
+                    cumulative_before: dict[str, float] = {}
+                    running = 0.0
+                    for d in cycle_days:
+                        cumulative_before[d] = running
+                        running += daily[d]
+
                     if display_today in daily:
                         result["today_kwh"] = daily[display_today]
+                        prior = cumulative_before.get(display_today, 0.0)
                         result["today_cost"] = self._calculate_cost(
-                            daily[display_today], tariff
+                            daily[display_today], tariff, cycle_kwh_before=prior
                         )
 
                     if display_yesterday in daily:
                         result["yesterday_kwh"] = daily[display_yesterday]
+                        prior = cumulative_before.get(display_yesterday, 0.0)
                         result["yesterday_cost"] = self._calculate_cost(
-                            daily[display_yesterday], tariff
+                            daily[display_yesterday], tariff, cycle_kwh_before=prior
                         )
 
                     # Build hourly usage
@@ -164,6 +201,26 @@ class MenuBarServer:
                     elif result["today_cost"] > 0:
                         result["monthly_projection"] = round(result["today_cost"] * 30, 2)
 
+                    # Calculate billing-cycle-aware marginal rate
+                    try:
+                        billing_start = self._billing_period_start(billing_day)
+                        cycle_kwh = sum(
+                            kwh for date, kwh in daily.items()
+                            if date >= billing_start.strftime("%Y-%m-%d")
+                        )
+                        marginal = self._marginal_rate(cycle_kwh, tariff)
+                        if marginal is not None:
+                            result["rate"] = marginal
+                            result["billing_cycle_kwh"] = round(cycle_kwh, 1)
+                    except Exception:
+                        pass
+
+                    # Log daily usage to CSV history (with cycle-aware costs)
+                    try:
+                        self._log_daily_usage(dict(daily), tariff, cumulative_before)
+                    except Exception:
+                        pass  # Don't fail on logging errors
+
                 except Exception:
                     pass  # No consumption data yet
 
@@ -172,8 +229,18 @@ class MenuBarServer:
 
         return result
 
-    def _calculate_cost(self, total_kwh: float, tariff: Optional[Tariff]) -> float:
-        """Calculate cost for a day's usage using tiered pricing (yen)."""
+    def _calculate_cost(
+        self, total_kwh: float, tariff: Optional[Tariff], cycle_kwh_before: float = 0.0
+    ) -> float:
+        """Calculate cost for a day's usage using tiered pricing (yen).
+
+        Args:
+            total_kwh: kWh used on this day
+            tariff: Tariff with tier rates
+            cycle_kwh_before: cumulative kWh already used in the billing cycle
+                before this day. This positions the day's usage in the correct
+                tier (tiers are monthly, not daily).
+        """
         if not tariff:
             return 0.0
 
@@ -189,16 +256,26 @@ class MenuBarServer:
                 tiers.append((start, end, rate))
 
         if tiers:
-            # Sort tiers by start kWh
             tiers.sort(key=lambda t: t[0])
             cost = 0.0
             remaining = total_kwh
+            cumulative = cycle_kwh_before
+
             for start, end, rate in tiers:
-                tier_kwh = min(remaining, end - start)
+                if cumulative >= end:
+                    # Already past this tier entirely
+                    continue
+                # How much of this tier is available (accounting for prior usage)
+                tier_start = max(start, cumulative)
+                tier_available = end - tier_start
+                tier_kwh = min(remaining, tier_available)
                 if tier_kwh <= 0:
-                    break
+                    continue
                 cost += tier_kwh * rate
                 remaining -= tier_kwh
+                cumulative += tier_kwh
+                if remaining <= 0:
+                    break
         else:
             # Flat rate fallback
             rate = tariff.peak_rate or tariff.rates.get("standard", 0)
@@ -213,6 +290,48 @@ class MenuBarServer:
         cost += tariff.standing_charge
 
         return round(cost, 2)
+
+    def _billing_period_start(self, billing_day: int) -> datetime:
+        """Calculate the start of the current billing period."""
+        now = datetime.now()
+        if now.day >= billing_day:
+            return now.replace(day=billing_day, hour=0, minute=0, second=0, microsecond=0)
+        # Before billing day — period started last month
+        if now.month == 1:
+            return now.replace(year=now.year - 1, month=12, day=billing_day,
+                               hour=0, minute=0, second=0, microsecond=0)
+        return now.replace(month=now.month - 1, day=billing_day,
+                           hour=0, minute=0, second=0, microsecond=0)
+
+    def _marginal_rate(self, cycle_kwh: float, tariff: Optional[Tariff]) -> Optional[float]:
+        """Get the marginal rate (current tier + FCA + REL) based on billing cycle usage."""
+        if not tariff:
+            return None
+
+        tiers: list[tuple[float, float, float]] = []
+        for key, rate in tariff.rates.items():
+            if "kWh" not in key:
+                continue
+            parts = key.replace("kWh", "").split("-")
+            if len(parts) == 2:
+                start = float(parts[0])
+                end = float("inf") if parts[1] in ("∞", "inf", "") else float(parts[1])
+                tiers.append((start, end, rate))
+
+        if not tiers:
+            return None
+
+        tiers.sort(key=lambda t: t[0])
+        fca = tariff.rates.get("fca", 0)
+        rel = tariff.rates.get("rel", 0)
+
+        # Find which tier the current usage falls in
+        for start, end, rate in tiers:
+            if cycle_kwh < end:
+                return round(rate + fca + rel, 2)
+
+        # Past all tiers — use the last one
+        return round(tiers[-1][2] + fca + rel, 2)
 
     def _base_response(self) -> dict[str, Any]:
         """Return base response structure with all required fields."""
@@ -233,8 +352,66 @@ class MenuBarServer:
             "fca": 0.0,
             "rel": 0.0,
             "tier_rates": {},
+            "billing_cycle_day": 1,
+            "billing_cycle_kwh": 0.0,
             "monthly_projection": 0.0,
         }
+
+    # -------------------------------------------------------------------------
+    # Usage History (CSV log)
+    # -------------------------------------------------------------------------
+
+    HISTORY_FILE = Path.home() / ".octopus-usage.csv"
+    HISTORY_HEADERS = ["date", "kwh", "cost"]
+
+    def _log_daily_usage(
+        self,
+        daily: dict[str, float],
+        tariff: Optional[Tariff],
+        cumulative_before: Optional[dict[str, float]] = None,
+    ) -> None:
+        """Append daily usage to CSV, skipping dates already logged."""
+        existing_dates: set[str] = set()
+        if self.HISTORY_FILE.exists():
+            with open(self.HISTORY_FILE, "r") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    existing_dates.add(row.get("date", ""))
+
+        new_rows = []
+        for date, kwh in sorted(daily.items()):
+            if date not in existing_dates:
+                prior = (cumulative_before or {}).get(date, 0.0)
+                cost = self._calculate_cost(kwh, tariff, cycle_kwh_before=prior)
+                new_rows.append({"date": date, "kwh": round(kwh, 2), "cost": round(cost, 2)})
+
+        if not new_rows:
+            return
+
+        write_header = not self.HISTORY_FILE.exists()
+        with open(self.HISTORY_FILE, "a", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=self.HISTORY_HEADERS)
+            if write_header:
+                writer.writeheader()
+            writer.writerows(new_rows)
+
+    def _read_history(self, days: int = 30) -> list[dict[str, Any]]:
+        """Read usage history from CSV, last N days."""
+        if not self.HISTORY_FILE.exists():
+            return []
+
+        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        rows = []
+        with open(self.HISTORY_FILE, "r") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if row.get("date", "") >= cutoff:
+                    rows.append({
+                        "date": row["date"],
+                        "kwh": float(row.get("kwh", 0)),
+                        "cost": float(row.get("cost", 0)),
+                    })
+        return sorted(rows, key=lambda r: r["date"], reverse=True)
 
     async def handle_ask(self, question: str) -> dict[str, Any]:
         """Handle AI question."""
@@ -293,6 +470,10 @@ class MenuBarServer:
                         self._output(result)
                     else:
                         self._output_error("Missing question")
+                elif command == "history":
+                    days = cmd.get("days", 30)
+                    history = self._read_history(days=days)
+                    self._output({"history": history})
                 elif command == "quit":
                     break
                 else:

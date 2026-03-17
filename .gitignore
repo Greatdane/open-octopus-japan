@@ -89,3 +89,6 @@ dist/
 # Credentials
 *.octopus.env
 requirements-dev.txt
+
+# Private project notes
+AppUpdates.md
