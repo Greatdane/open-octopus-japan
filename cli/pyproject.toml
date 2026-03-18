@@ -69,10 +69,10 @@ octopus-menubar = "open_octopus.menubar:main"
 octopus-server = "open_octopus.menubar_server:main"
 
 [project.urls]
-Homepage = "https://github.com/abracadabra50/open-octopus-japan"
-Documentation = "https://github.com/abracadabra50/open-octopus-japan#readme"
-Repository = "https://github.com/abracadabra50/open-octopus-japan"
-Issues = "https://github.com/abracadabra50/open-octopus-japan/issues"
+Homepage = "https://github.com/Greatdane/open-octopus-japan"
+Documentation = "https://github.com/Greatdane/open-octopus-japan#readme"
+Repository = "https://github.com/Greatdane/open-octopus-japan"
+Issues = "https://github.com/Greatdane/open-octopus-japan/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/open_octopus"]

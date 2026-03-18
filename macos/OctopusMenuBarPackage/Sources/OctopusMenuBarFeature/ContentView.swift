@@ -338,23 +338,6 @@ struct CardView<Content: View>: View {
     }
 }
 
-struct RateProgressBar: View {
-    let progress: Double
-    let isOffPeak: Bool
-
-    var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(Color.secondary.opacity(0.15))
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(isOffPeak ? Color.cyan : Color.orange)
-                    .frame(width: geo.size.width * min(max(progress, 0), 1))
-            }
-        }
-        .frame(height: 4)
-    }
-}
 
 struct QuickButton: View {
     let text: String
@@ -376,13 +359,12 @@ struct QuickButton: View {
 struct SparklineBar: View {
     let value: Double
     let maxVal: Double
-    let isOffPeak: Bool
     let timeLabel: String
     @State private var isHovered = false
 
     var body: some View {
         RoundedRectangle(cornerRadius: 1)
-            .fill(isOffPeak ? Color.cyan.opacity(0.6) : Color.secondary.opacity(0.4))
+            .fill(Color.orange.opacity(0.5))
             .frame(height: maxVal > 0 ? CGFloat(value / maxVal) * 28 + 2 : 2)
             .onHover { hovering in
                 isHovered = hovering
@@ -657,7 +639,6 @@ public struct MenuBarView: View {
                 SparklineBar(
                     value: value,
                     maxVal: maxVal,
-                    isOffPeak: isOffPeakForIndex(index, count: values.count, useHalfHourly: useHalfHourly),
                     timeLabel: timeLabelForIndex(index, count: values.count, useHalfHourly: useHalfHourly)
                 )
             }
@@ -678,20 +659,6 @@ public struct MenuBarView: View {
         } else {
             let hour = (24 - slotFromEnd) % 24
             return String(format: "%02d:00", hour)
-        }
-    }
-
-    private func isOffPeakForIndex(_ index: Int, count: Int, useHalfHourly: Bool) -> Bool {
-        // Calculate actual hour for this slot
-        let slotsPerDay = useHalfHourly ? 48 : 24
-        let slotInDay = index % slotsPerDay
-
-        if useHalfHourly {
-            // Off-peak: 23:30 (slot 47) to 05:30 (slots 0-11)
-            return slotInDay >= 47 || slotInDay <= 11
-        } else {
-            // Off-peak: hours 0-5 and 23
-            return slotInDay < 6 || slotInDay == 23
         }
     }
 
