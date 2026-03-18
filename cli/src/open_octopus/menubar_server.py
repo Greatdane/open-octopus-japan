@@ -370,30 +370,36 @@ class MenuBarServer:
         tariff: Optional[Tariff],
         cumulative_before: Optional[dict[str, float]] = None,
     ) -> None:
-        """Append daily usage to CSV, skipping dates already logged."""
-        existing_dates: set[str] = set()
+        """Write daily usage to CSV, updating existing rows if kWh changed."""
+        # Read existing rows
+        existing: dict[str, dict[str, str]] = {}
         if self.HISTORY_FILE.exists():
             with open(self.HISTORY_FILE, "r") as f:
                 reader = csv.DictReader(f)
                 for row in reader:
-                    existing_dates.add(row.get("date", ""))
+                    existing[row["date"]] = row
 
-        new_rows = []
+        # Update or add rows from current data
+        changed = False
         for date, kwh in sorted(daily.items()):
-            if date not in existing_dates:
-                prior = (cumulative_before or {}).get(date, 0.0)
-                cost = self._calculate_cost(kwh, tariff, cycle_kwh_before=prior)
-                new_rows.append({"date": date, "kwh": round(kwh, 2), "cost": round(cost, 2)})
+            prior = (cumulative_before or {}).get(date, 0.0)
+            cost = self._calculate_cost(kwh, tariff, cycle_kwh_before=prior)
+            new_row = {"date": date, "kwh": str(round(kwh, 2)), "cost": str(round(cost, 2))}
 
-        if not new_rows:
+            old = existing.get(date)
+            if not old or old.get("kwh") != new_row["kwh"]:
+                existing[date] = new_row
+                changed = True
+
+        if not changed:
             return
 
-        write_header = not self.HISTORY_FILE.exists()
-        with open(self.HISTORY_FILE, "a", newline="") as f:
+        # Rewrite the entire CSV with updated data
+        with open(self.HISTORY_FILE, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=self.HISTORY_HEADERS)
-            if write_header:
-                writer.writeheader()
-            writer.writerows(new_rows)
+            writer.writeheader()
+            for date in sorted(existing.keys()):
+                writer.writerow(existing[date])
 
     def _read_history(self, days: int = 30) -> list[dict[str, Any]]:
         """Read usage history from CSV, last N days."""
