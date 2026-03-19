@@ -23,6 +23,8 @@ public struct OctopusData: Codable, Sendable {
     var tierRates: [String: Double] // Tiered rates e.g. {"0-15kWh": 0.0, "15-120kWh": 20.08}
     var billingCycleDay: Int       // Day of month billing resets (from agreement)
     var billingCycleKwh: Double    // kWh used so far this billing cycle
+    var billingCycleCost: Double   // Cost so far this billing cycle (yen)
+    var billingDaysRemaining: Int  // Days until next billing date
     var halfHourlyUsage: [Double]  // 48 slots for last 24h
     var dataDateLatest: String?   // Actual date of "today" data
     var dataDatePrevious: String? // Actual date of "yesterday" data
@@ -42,6 +44,8 @@ public struct OctopusData: Codable, Sendable {
         case tierRates = "tier_rates"
         case billingCycleDay = "billing_cycle_day"
         case billingCycleKwh = "billing_cycle_kwh"
+        case billingCycleCost = "billing_cycle_cost"
+        case billingDaysRemaining = "billing_days_remaining"
         case halfHourlyUsage = "half_hourly_usage"
         case dataDateLatest = "data_date_latest"
         case dataDatePrevious = "data_date_previous"
@@ -62,23 +66,61 @@ public struct OctopusData: Codable, Sendable {
         tierRates = [:]
         billingCycleDay = 1
         billingCycleKwh = 0
+        billingCycleCost = 0
+        billingDaysRemaining = 0
         halfHourlyUsage = []
     }
 }
 
 // MARK: - History Data
 
+public struct TierBreakdown: Codable, Sendable {
+    var tier: String    // e.g. "0-15kWh"
+    var kwh: Double
+    var rate: Double    // effective rate (base + FCA + REL)
+    var cost: Double
+}
+
 public struct HistoryEntry: Codable, Identifiable, Sendable {
     var date: String
     var kwh: Double
     var cost: Double
+    var tierBreakdown: [TierBreakdown]?
 
     public var id: String { date }
+
+    enum CodingKeys: String, CodingKey {
+        case date, kwh, cost
+        case tierBreakdown = "tier_breakdown"
+    }
 }
 
 public struct HistoryResponse: Codable, Sendable {
     var history: [HistoryEntry]?
     var error: String?
+}
+
+// MARK: - Tier Colours
+
+/// Consistent colours for consumption tiers across rates card and history
+func tierColor(for index: Int) -> Color {
+    let colors: [Color] = [
+        .green,          // Tier 1 (free/cheapest)
+        .yellow,         // Tier 2
+        .orange,         // Tier 3
+        .red,            // Tier 4 (most expensive)
+    ]
+    return colors[min(index, colors.count - 1)]
+}
+
+func tierColorForKey(_ key: String, allKeys: [String]) -> Color {
+    let sorted = allKeys.sorted { a, b in
+        let aStart = Double(a.split(separator: "-").first ?? "0") ?? 0
+        let bStart = Double(b.split(separator: "-").first ?? "0") ?? 0
+        return aStart < bStart
+    }
+    let index = sorted.firstIndex(of: key) ?? 0
+    return tierColor(for: index)
 }
 
 // MARK: - Settings
@@ -508,14 +550,17 @@ public struct MenuBarView: View {
             VStack(alignment: .leading, spacing: 6) {
                 // Tiered rates (if available)
                 if !state.data.tierRates.isEmpty {
+                    let allKeys = Array(state.data.tierRates.keys)
                     let sortedTiers = state.data.tierRates.sorted { a, b in
-                        // Parse the start kWh from keys like "0-15kWh"
                         let aStart = Double(a.key.split(separator: "-").first ?? "0") ?? 0
                         let bStart = Double(b.key.split(separator: "-").first ?? "0") ?? 0
                         return aStart < bStart
                     }
                     ForEach(sortedTiers, id: \.key) { tier, rate in
-                        HStack {
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(tierColorForKey(tier, allKeys: allKeys))
+                                .frame(width: 6, height: 6)
                             Text(tier)
                                 .font(.system(size: 10))
                                 .foregroundColor(.secondary)
@@ -666,23 +711,49 @@ public struct MenuBarView: View {
 
     private var insightsCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("INSIGHTS", systemImage: "lightbulb.fill")
+            Label("BILLING CYCLE", systemImage: "calendar")
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundColor(.secondary)
 
             VStack(alignment: .leading, spacing: 6) {
+                // Cycle cost so far
+                if state.data.billingCycleCost > 0 {
+                    HStack {
+                        Text("This cycle so far")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text(String(format: "¥%.0f", state.data.billingCycleCost))
+                            .font(.system(size: 11, weight: .semibold))
+                    }
 
-                // Monthly projection
-                if state.data.monthlyProjection > 0 {
-                    HStack(spacing: 4) {
-                        Image(systemName: "calendar")
+                    HStack {
+                        Text(String(format: "%.0f kWh used", state.data.billingCycleKwh))
                             .font(.system(size: 10))
-                            .foregroundColor(.purple)
-                        Text(String(format: "On track for ¥%.0f/month", state.data.monthlyProjection))
-                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        if state.data.billingDaysRemaining > 0 {
+                            Text(String(format: "%d days left", state.data.billingDaysRemaining))
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+
+                    Divider()
+
+                    // Projected full month
+                    if state.data.monthlyProjection > 0 {
+                        HStack {
+                            Text("Projected bill")
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Text(String(format: "~¥%.0f", state.data.monthlyProjection))
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundColor(.orange)
+                        }
                     }
                 }
-
             }
         }
         .padding(12)
@@ -768,6 +839,8 @@ public struct MenuBarView: View {
                     let entries = Array(state.historyEntries.prefix(14))
                     let maxKwh = entries.map(\.kwh).max() ?? 1
 
+                    let allTierKeys = Array(state.data.tierRates.keys)
+
                     ForEach(entries) { entry in
                         HStack(spacing: 6) {
                             Text(formatHistoryDate(entry.date))
@@ -775,10 +848,24 @@ public struct MenuBarView: View {
                                 .foregroundColor(.secondary)
                                 .frame(width: 45, alignment: .leading)
 
+                            // Segmented bar coloured by tier
                             GeometryReader { geo in
-                                RoundedRectangle(cornerRadius: 2)
-                                    .fill(Color.blue.opacity(0.6))
-                                    .frame(width: max(2, geo.size.width * CGFloat(entry.kwh / maxKwh)))
+                                let totalWidth = max(2, geo.size.width * CGFloat(entry.kwh / maxKwh))
+                                HStack(spacing: 0) {
+                                    if let tiers = entry.tierBreakdown, !tiers.isEmpty, entry.kwh > 0 {
+                                        ForEach(Array(tiers.enumerated()), id: \.offset) { idx, tb in
+                                            let segWidth = totalWidth * CGFloat(tb.kwh / entry.kwh)
+                                            RoundedRectangle(cornerRadius: idx == 0 ? 2 : 0)
+                                                .fill(tierColorForKey(tb.tier, allKeys: allTierKeys).opacity(0.7))
+                                                .frame(width: max(1, segWidth))
+                                        }
+                                    } else {
+                                        RoundedRectangle(cornerRadius: 2)
+                                            .fill(Color.orange.opacity(0.5))
+                                            .frame(width: totalWidth)
+                                    }
+                                    Spacer(minLength: 0)
+                                }
                             }
                             .frame(height: 10)
 

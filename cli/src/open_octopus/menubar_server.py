@@ -195,23 +195,42 @@ class MenuBarServer:
                             half_hourly.append(half_hourly_by_day[display_today].get(s, 0))
                     result["half_hourly_usage"] = half_hourly[-48:] if half_hourly else []
 
-                    # Monthly projection
-                    if result["yesterday_cost"] > 0:
-                        result["monthly_projection"] = round(result["yesterday_cost"] * 30, 2)
-                    elif result["today_cost"] > 0:
-                        result["monthly_projection"] = round(result["today_cost"] * 30, 2)
-
-                    # Calculate billing-cycle-aware marginal rate
+                    # Calculate billing-cycle-aware stats
                     try:
                         billing_start = self._billing_period_start(billing_day)
+                        billing_start_str = billing_start.strftime("%Y-%m-%d")
+
                         cycle_kwh = sum(
                             kwh for date, kwh in daily.items()
-                            if date >= billing_start.strftime("%Y-%m-%d")
+                            if date >= billing_start_str
                         )
                         marginal = self._marginal_rate(cycle_kwh, tariff)
                         if marginal is not None:
                             result["rate"] = marginal
                             result["billing_cycle_kwh"] = round(cycle_kwh, 1)
+
+                        # Cycle cost so far (sum of daily costs within cycle)
+                        cycle_cost = sum(
+                            self._calculate_cost(
+                                daily[d], tariff,
+                                cycle_kwh_before=cumulative_before.get(d, 0.0)
+                            )
+                            for d in cycle_days
+                        )
+                        result["billing_cycle_cost"] = round(cycle_cost, 0)
+
+                        # Project to full month based on days elapsed
+                        days_elapsed = (datetime.now() - billing_start).days
+                        if days_elapsed > 0:
+                            daily_avg_cost = cycle_cost / days_elapsed
+                            result["monthly_projection"] = round(daily_avg_cost * 30, 0)
+
+                        # Days remaining in cycle
+                        next_billing = billing_start.replace(
+                            month=billing_start.month + 1 if billing_start.month < 12 else 1,
+                            year=billing_start.year if billing_start.month < 12 else billing_start.year + 1,
+                        )
+                        result["billing_days_remaining"] = (next_billing - datetime.now()).days
                     except Exception:
                         pass
 
@@ -291,6 +310,58 @@ class MenuBarServer:
 
         return round(cost, 2)
 
+    def _calculate_tier_breakdown(
+        self, total_kwh: float, tariff: Optional[Tariff], cycle_kwh_before: float = 0.0
+    ) -> list[dict[str, Any]]:
+        """Return per-tier kWh breakdown for a day's usage.
+
+        Returns list of {"tier": "0-15kWh", "kwh": 5.0, "rate": 0.0, "cost": 0.0}
+        """
+        if not tariff:
+            return []
+
+        tiers: list[tuple[float, float, float, str]] = []
+        for key, rate in tariff.rates.items():
+            if "kWh" not in key:
+                continue
+            parts = key.replace("kWh", "").split("-")
+            if len(parts) == 2:
+                start = float(parts[0])
+                end = float("inf") if parts[1] in ("∞", "inf", "") else float(parts[1])
+                tiers.append((start, end, rate, key))
+
+        if not tiers:
+            return []
+
+        tiers.sort(key=lambda t: t[0])
+        fca = tariff.rates.get("fca", 0)
+        rel = tariff.rates.get("rel", 0)
+        breakdown = []
+        remaining = total_kwh
+        cumulative = cycle_kwh_before
+
+        for start, end, rate, label in tiers:
+            if cumulative >= end:
+                continue
+            tier_start = max(start, cumulative)
+            tier_available = end - tier_start
+            tier_kwh = min(remaining, tier_available)
+            if tier_kwh <= 0:
+                continue
+            tier_cost = tier_kwh * (rate + fca + rel)
+            breakdown.append({
+                "tier": label,
+                "kwh": round(tier_kwh, 2),
+                "rate": round(rate + fca + rel, 2),
+                "cost": round(tier_cost, 2),
+            })
+            remaining -= tier_kwh
+            cumulative += tier_kwh
+            if remaining <= 0:
+                break
+
+        return breakdown
+
     def _billing_period_start(self, billing_day: int) -> datetime:
         """Calculate the start of the current billing period."""
         now = datetime.now()
@@ -354,6 +425,8 @@ class MenuBarServer:
             "tier_rates": {},
             "billing_cycle_day": 1,
             "billing_cycle_kwh": 0.0,
+            "billing_cycle_cost": 0.0,
+            "billing_days_remaining": 0,
             "monthly_projection": 0.0,
         }
 
@@ -362,7 +435,7 @@ class MenuBarServer:
     # -------------------------------------------------------------------------
 
     HISTORY_FILE = Path.home() / ".octopus-usage.csv"
-    HISTORY_HEADERS = ["date", "kwh", "cost"]
+    HISTORY_HEADERS = ["date", "kwh", "cost", "tier_breakdown"]
 
     def _log_daily_usage(
         self,
@@ -371,7 +444,6 @@ class MenuBarServer:
         cumulative_before: Optional[dict[str, float]] = None,
     ) -> None:
         """Write daily usage to CSV, updating existing rows if kWh changed."""
-        # Read existing rows
         existing: dict[str, dict[str, str]] = {}
         if self.HISTORY_FILE.exists():
             with open(self.HISTORY_FILE, "r") as f:
@@ -379,22 +451,26 @@ class MenuBarServer:
                 for row in reader:
                     existing[row["date"]] = row
 
-        # Update or add rows from current data
         changed = False
         for date, kwh in sorted(daily.items()):
             prior = (cumulative_before or {}).get(date, 0.0)
             cost = self._calculate_cost(kwh, tariff, cycle_kwh_before=prior)
-            new_row = {"date": date, "kwh": str(round(kwh, 2)), "cost": str(round(cost, 2))}
+            breakdown = self._calculate_tier_breakdown(kwh, tariff, cycle_kwh_before=prior)
+            new_row = {
+                "date": date,
+                "kwh": str(round(kwh, 2)),
+                "cost": str(round(cost, 2)),
+                "tier_breakdown": json.dumps(breakdown),
+            }
 
             old = existing.get(date)
-            if not old or old.get("kwh") != new_row["kwh"]:
+            if not old or old.get("kwh") != new_row["kwh"] or not old.get("tier_breakdown"):
                 existing[date] = new_row
                 changed = True
 
         if not changed:
             return
 
-        # Rewrite the entire CSV with updated data
         with open(self.HISTORY_FILE, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=self.HISTORY_HEADERS)
             writer.writeheader()
@@ -412,10 +488,16 @@ class MenuBarServer:
             reader = csv.DictReader(f)
             for row in reader:
                 if row.get("date", "") >= cutoff:
+                    breakdown = []
+                    try:
+                        breakdown = json.loads(row.get("tier_breakdown", "[]"))
+                    except (json.JSONDecodeError, TypeError):
+                        pass
                     rows.append({
                         "date": row["date"],
                         "kwh": float(row.get("kwh", 0)),
                         "cost": float(row.get("cost", 0)),
+                        "tier_breakdown": breakdown,
                     })
         return sorted(rows, key=lambda r: r["date"], reverse=True)
 
