@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 // MARK: - Data Models
 
@@ -195,6 +196,7 @@ public class AppState: ObservableObject {
         Task { @MainActor in
             self.setupBridge()
             self.startAutoRefresh()
+            self.observeWakeFromSleep()
         }
     }
 
@@ -214,6 +216,23 @@ public class AppState: ObservableObject {
         // Auto-fetch history since it's shown by default
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
             self?.fetchHistory()
+        }
+    }
+
+    private func observeWakeFromSleep() {
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.pythonBridge?.restart()
+                // Give the process a moment to spawn before sending commands
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                    self?.refresh()
+                    self?.fetchHistory()
+                }
+            }
         }
     }
 
@@ -269,6 +288,7 @@ public final class PythonBridge: @unchecked Sendable {
     private var inputPipe: Pipe?
     private let onData: @Sendable (OctopusData) -> Void
     private let onHistory: @Sendable (HistoryResponse) -> Void
+    private var isStopping = false
 
     public init(
         onData: @escaping @Sendable (OctopusData) -> Void,
@@ -279,6 +299,18 @@ public final class PythonBridge: @unchecked Sendable {
     }
 
     public func start() {
+        isStopping = false
+        launch()
+    }
+
+    public func restart() {
+        isStopping = true
+        process?.terminate()
+        isStopping = false
+        launch()
+    }
+
+    private func launch() {
         process = Process()
         outputPipe = Pipe()
         inputPipe = Pipe()
@@ -310,6 +342,14 @@ public final class PythonBridge: @unchecked Sendable {
         outputPipe?.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             if !data.isEmpty { Self.processOutput(data, dataHandler: dataHandler, historyHandler: historyHandler) }
+        }
+
+        process?.terminationHandler = { [weak self] _ in
+            guard let self = self, !self.isStopping else { return }
+            // Process died unexpectedly — respawn after a short delay to avoid tight crash loops
+            DispatchQueue.global().asyncAfter(deadline: .now() + 2) { [weak self] in
+                self?.launch()
+            }
         }
 
         try? process?.run()
@@ -354,6 +394,7 @@ public final class PythonBridge: @unchecked Sendable {
     }
 
     public func stop() {
+        isStopping = true
         sendCommand(["command": "quit"])
         process?.terminate()
     }
@@ -1138,15 +1179,16 @@ public struct MenuBarView: View {
         let today = calendar.startOfDay(for: Date())
         let yesterday = calendar.date(byAdding: .day, value: -1, to: today)!
 
+        let displayDf = DateFormatter()
+        displayDf.dateFormat = "MMM d"
+        let dateLabel = displayDf.string(from: date)
+
         if calendar.isDate(date, inSameDayAs: today) {
-            return "Today"
+            return "Today (\(dateLabel))"
         } else if calendar.isDate(date, inSameDayAs: yesterday) {
-            return "Yesterday"
+            return "Yesterday (\(dateLabel))"
         } else {
-            // Show date like "Dec 28"
-            let displayDf = DateFormatter()
-            displayDf.dateFormat = "MMM d"
-            return displayDf.string(from: date)
+            return dateLabel
         }
     }
 
