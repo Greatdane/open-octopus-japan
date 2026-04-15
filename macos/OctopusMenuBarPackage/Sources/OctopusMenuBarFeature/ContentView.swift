@@ -558,14 +558,20 @@ public struct MenuBarView: View {
 
                 Spacer()
 
-                // Balance
+                // Latest day usage
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text(formatBalance(state.data.balance, credit: state.data.balanceIsCredit))
-                        .font(.system(size: 16, weight: .semibold, design: .monospaced))
-                        .foregroundColor(state.data.balanceIsCredit ? .green : .primary)
-                    Text("Balance")
-                        .font(.system(size: 10))
+                    HStack(spacing: 4) {
+                        Image(systemName: "bolt.fill")
+                            .foregroundColor(.orange)
+                        Text(formatKwh(state.data.todayKwh))
+                            .font(.system(size: 22, weight: .semibold, design: .rounded))
+                    }
+                    Text("Usage today")
+                        .font(.system(size: 11))
                         .foregroundColor(.secondary)
+                    Text(formatCost(state.data.todayCost))
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundColor(.secondary.opacity(0.7))
                 }
             }
 
@@ -789,9 +795,9 @@ public struct MenuBarView: View {
                                 .font(.system(size: 11))
                                 .foregroundColor(.secondary)
                             Spacer()
-                            Text(String(format: "~¥%.0f", state.data.monthlyProjection))
+                            Text(String(format: "¥%.0f", state.data.monthlyProjection))
                                 .font(.system(size: 11, weight: .semibold))
-                                .foregroundColor(.orange)
+                                .foregroundColor(.primary)
                         }
                     }
                 }
