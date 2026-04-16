@@ -236,7 +236,7 @@ class MenuBarServer:
 
                     # Log daily usage to CSV history (with cycle-aware costs)
                     try:
-                        self._log_daily_usage(dict(daily), tariff, cumulative_before)
+                        self._log_daily_usage(dict(daily), tariff, billing_day)
                     except Exception:
                         pass  # Don't fail on logging errors
 
@@ -437,13 +437,48 @@ class MenuBarServer:
     HISTORY_FILE = Path.home() / ".octopus-usage.csv"
     HISTORY_HEADERS = ["date", "kwh", "cost", "tier_breakdown"]
 
+    def _build_cumulative_before(
+        self, daily: dict[str, float], billing_day: int
+    ) -> dict[str, float]:
+        """For each date, return cumulative kWh in its billing cycle before that date.
+
+        Groups dates by billing cycle (using billing_day) and accumulates within each
+        cycle so tier positioning is correct for every logged day, not just the current
+        cycle.
+        """
+        def cycle_key(date_str: str) -> str:
+            d = datetime.strptime(date_str, "%Y-%m-%d")
+            if d.day >= billing_day:
+                start = d.replace(day=billing_day)
+            elif d.month == 1:
+                start = d.replace(year=d.year - 1, month=12, day=billing_day)
+            else:
+                start = d.replace(month=d.month - 1, day=billing_day)
+            return start.strftime("%Y-%m-%d")
+
+        by_cycle: dict[str, list[str]] = defaultdict(list)
+        for date in daily:
+            by_cycle[cycle_key(date)].append(date)
+
+        result: dict[str, float] = {}
+        for dates in by_cycle.values():
+            running = 0.0
+            for date in sorted(dates):
+                result[date] = running
+                running += daily[date]
+        return result
+
     def _log_daily_usage(
         self,
         daily: dict[str, float],
         tariff: Optional[Tariff],
-        cumulative_before: Optional[dict[str, float]] = None,
+        billing_day: int,
     ) -> None:
-        """Write daily usage to CSV, updating existing rows if kWh changed."""
+        """Write daily usage to CSV, updating existing rows if kWh or breakdown changed.
+
+        Merges newly fetched days with previously logged days so cumulative-based
+        tier breakdowns can be recomputed for the full history.
+        """
         existing: dict[str, dict[str, str]] = {}
         if self.HISTORY_FILE.exists():
             with open(self.HISTORY_FILE, "r") as f:
@@ -451,9 +486,21 @@ class MenuBarServer:
                 for row in reader:
                     existing[row["date"]] = row
 
+        # Merge CSV kWh into daily for full cycle coverage when recomputing breakdowns
+        merged_daily: dict[str, float] = dict(daily)
+        for date, row in existing.items():
+            if date not in merged_daily:
+                try:
+                    merged_daily[date] = float(row.get("kwh", 0))
+                except ValueError:
+                    continue
+
+        cumulative_before = self._build_cumulative_before(merged_daily, billing_day)
+
         changed = False
-        for date, kwh in sorted(daily.items()):
-            prior = (cumulative_before or {}).get(date, 0.0)
+        for date in sorted(merged_daily.keys()):
+            kwh = merged_daily[date]
+            prior = cumulative_before.get(date, 0.0)
             cost = self._calculate_cost(kwh, tariff, cycle_kwh_before=prior)
             breakdown = self._calculate_tier_breakdown(kwh, tariff, cycle_kwh_before=prior)
             new_row = {
@@ -464,7 +511,7 @@ class MenuBarServer:
             }
 
             old = existing.get(date)
-            if not old or old.get("kwh") != new_row["kwh"] or not old.get("tier_breakdown"):
+            if not old or any(old.get(k) != new_row[k] for k in new_row):
                 existing[date] = new_row
                 changed = True
 

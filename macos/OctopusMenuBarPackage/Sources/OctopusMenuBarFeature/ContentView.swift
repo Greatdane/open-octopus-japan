@@ -337,6 +337,11 @@ public final class PythonBridge: @unchecked Sendable {
         }
         process?.environment = env
 
+        // PyInstaller onedir needs the working directory to find _internal/
+        if serverPath.contains(".app/Contents/Resources/") {
+            process?.currentDirectoryURL = URL(fileURLWithPath: serverPath).deletingLastPathComponent()
+        }
+
         let dataHandler = self.onData
         let historyHandler = self.onHistory
         outputPipe?.fileHandleForReading.readabilityHandler = { handle in
@@ -374,6 +379,12 @@ public final class PythonBridge: @unchecked Sendable {
     }
 
     private func findServerPath() -> String {
+        // Check inside the app bundle first (for distributed .app)
+        if let bundledPath = Bundle.main.path(forResource: "octopus-server", ofType: nil, inDirectory: "PythonServer") {
+            return bundledPath
+        }
+
+        // Fallback to development paths
         let home = NSHomeDirectory()
         let paths = [
             "\(home)/open-octopus-japan/venv/bin/octopus-server",
@@ -758,9 +769,17 @@ public struct MenuBarView: View {
 
     private var insightsCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("BILLING CYCLE", systemImage: "calendar")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundColor(.secondary)
+            HStack {
+                Label("BILLING CYCLE", systemImage: "calendar")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(.secondary)
+                Spacer()
+                if state.data.billingCycleDay > 0 {
+                    Text("Started \(formatBillingCycleStart(day: state.data.billingCycleDay))")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                }
+            }
 
             VStack(alignment: .leading, spacing: 6) {
                 // Cycle cost so far
@@ -893,7 +912,7 @@ public struct MenuBarView: View {
                             Text(formatHistoryDate(entry.date))
                                 .font(.system(size: 9, design: .monospaced))
                                 .foregroundColor(.secondary)
-                                .frame(width: 45, alignment: .leading)
+                                .frame(width: 55, alignment: .leading)
 
                             // Segmented bar coloured by tier
                             GeometryReader { geo in
@@ -950,8 +969,8 @@ public struct MenuBarView: View {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
         guard let date = formatter.date(from: dateStr) else { return dateStr }
-        formatter.dateFormat = "M/d (E)"
-        formatter.locale = Locale(identifier: "ja_JP")
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "M/dd EEE"
         return formatter.string(from: date)
     }
 
@@ -1168,6 +1187,23 @@ public struct MenuBarView: View {
     private func formatSessionDate(_ iso: String) -> String {
         let formatter = ISO8601DateFormatter()
         guard let date = formatter.date(from: iso) else { return "-" }
+        let df = DateFormatter()
+        df.dateFormat = "MMM d"
+        return df.string(from: date)
+    }
+
+    private func formatBillingCycleStart(day: Int) -> String {
+        let calendar = Calendar.current
+        let now = Date()
+        var components = calendar.dateComponents([.year, .month], from: now)
+        components.day = day
+
+        // If today's day is before the cycle day, the current cycle started last month
+        if calendar.component(.day, from: now) < day {
+            components.month = (components.month ?? 1) - 1
+        }
+
+        guard let date = calendar.date(from: components) else { return "day \(day)" }
         let df = DateFormatter()
         df.dateFormat = "MMM d"
         return df.string(from: date)

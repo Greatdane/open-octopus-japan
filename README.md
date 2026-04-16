@@ -3,12 +3,27 @@
 > **Unofficial** open-source toolkit for [Octopus Energy Japan](https://octopusenergy.co.jp) customers.
 > Not affiliated with or endorsed by Octopus Energy.
 
+<p align="center">
+  <img src="docs/menubar.png" alt="Open Octopus Japan menu bar app" width="320">
+</p>
+
+## Download
+
+**[Download the latest release](https://github.com/Greatdane/open-octopus-japan/releases/latest)** — macOS app (Apple Silicon / ARM64 only)
+
+1. Download `OpenOctopusJapan-x.x.x-arm64.dmg`
+2. Open the DMG and drag **OctopusMenuBar** to Applications
+3. On first launch: right-click the app → **Open** (required for unsigned apps)
+4. Create `~/.octopus.env` with your credentials (see [Configuration](#configuration))
+
+> Requires macOS on Apple Silicon (M1/M2/M3/M4). Intel Macs are not currently supported.
+
 ## What's Included
 
 | Component | Directory | Description |
 |-----------|-----------|-------------|
-| **Menu Bar App** | `macos/` | Native macOS menu bar app — live rate, usage, tiered pricing, history, AI assistant |
-| **CLI Tools** | `cli/` | Terminal commands for account, usage, tariff, supply points, and more |
+| **Menu Bar App** | `macos/` | Native macOS menu bar app — live rate, daily usage, tiered pricing, history, billing cycle insights |
+| **CLI Tools** | `cli/` | Terminal commands for account, usage, tariff, supply points, billing cycle, and more |
 | **Python Client** | `cli/` | Async GraphQL client library for the Octopus Energy Japan API |
 
 ## Menu Bar App
@@ -17,10 +32,11 @@ The macOS menu bar app shows your electricity data at a glance:
 
 - **Live marginal rate** — billing-cycle-aware (shows your actual current tier, not the max)
 - **Daily usage** — today vs yesterday with cost estimates using tiered pricing
-- **Tiered rate breakdown** — all consumption tiers + FCA + REL
-- **Usage history** — 14-day bar chart with kWh and costs
-- **Monthly projection** — estimated monthly cost
-- **AI assistant** — ask questions about your energy usage (requires Anthropic API key)
+- **Tiered rate breakdown** — all consumption tiers with colour-coded dots + FCA + REL
+- **Usage history** — daily bar chart with tier-coloured segments (green/yellow/orange/red)
+- **Billing cycle insights** — cycle start date, cost so far, kWh used, days remaining, projected bill
+- **AI assistant** — ask questions about your energy usage (off by default, requires Anthropic API key)
+- **Auto-recovery** — restarts the Python bridge after sleep or unexpected termination
 
 ### Building the App
 
@@ -45,7 +61,7 @@ octopus account        # Account balance and details
 octopus tariff         # Tariff breakdown with tiered rates, FCA, REL
 octopus supply         # Supply point and meter details
 octopus agreements     # Current and past agreements
-octopus status         # Quick overview of balance and current rate
+octopus status         # Balance, current rate, and billing cycle info
 
 # Usage
 octopus usage          # Daily consumption (last 7 days)
@@ -97,7 +113,8 @@ open-octopus-japan/
 │   ├── OctopusMenuBar.xcodeproj/ # Xcode project
 │   └── Config/                   # Build configurations
 └── docs/
-    └── japan-api-reference.md    # Complete Japan GraphQL API reference
+    ├── japan-api-reference.md    # Complete Japan GraphQL API reference
+    └── menubar.png               # Menu bar app screenshot
 ```
 
 ## Python Client Library
@@ -137,7 +154,7 @@ See [docs/japan-api-reference.md](docs/japan-api-reference.md) for the complete 
 
 ```bash
 cd cli
-pytest                                          # 43 tests
+pytest                                          # Run tests
 ruff check src/ tests/                          # Lint
 mypy src/open_octopus/ --ignore-missing-imports # Type check
 ```

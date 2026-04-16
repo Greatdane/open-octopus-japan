@@ -177,6 +177,27 @@ def status() -> None:
             except OctopusError:
                 pass
 
+            # Billing cycle
+            try:
+                agreements = await client.get_agreements()
+                active = [a for a in agreements if a.valid_from and (not a.valid_to)]
+                if active and active[0].valid_from:
+                    day = active[0].valid_from.day
+                    now = datetime.now()
+                    if now.day >= day:
+                        start = now.replace(day=day, hour=0, minute=0, second=0, microsecond=0)
+                    else:
+                        if now.month == 1:
+                            start = now.replace(year=now.year - 1, month=12, day=day)
+                        else:
+                            start = now.replace(month=now.month - 1, day=day)
+                    console.print(
+                        f"📅 Billing cycle: [bold]day {day}[/] "
+                        f"(started {start.strftime('%b %d')})"
+                    )
+            except OctopusError:
+                pass
+
     run_async(_run())
 
 

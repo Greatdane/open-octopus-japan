@@ -48,7 +48,7 @@ open-octopus-japan/
 │   └── Config/                      # Xcode build configurations (.xcconfig)
 ├── docs/
 │   ├── japan-api-reference.md       # Complete Japan GraphQL API reference
-│   └── menubar-screenshot.png
+│   └── menubar.png
 ├── README.md
 ├── CLAUDE.md
 ├── .env.example
@@ -111,5 +111,10 @@ xcodebuild -scheme OctopusMenuBar -destination 'platform=macOS,arch=arm64' build
 - Electricity only - no gas support in Japan
 - Account number auto-discovered from credentials (no MPAN/meter serial needed)
 - Effective rate = base unit rate + fuel cost adjustment + renewable energy levy
+- Billing cycle day derived from first agreement's `valid_from` date
+- Tier breakdown colours: green (0-15kWh), yellow (15-120kWh), orange (120-300kWh), red (300+kWh)
+- History CSV (`~/.octopus-usage.csv`) stores per-day kWh, cost, and tier breakdown JSON
+- Tier positions are computed per billing cycle — cumulative kWh resets each cycle
+- PythonBridge auto-restarts on unexpected termination and on macOS wake from sleep
 - Speculative endpoints use `_graphql_safe()` which catches HTTP 400/GraphQL errors
 - External reference repos (oejp-api-example, tako-mcp, octopus-bot) are untested - verify API patterns before adopting
