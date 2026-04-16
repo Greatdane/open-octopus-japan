@@ -38,11 +38,36 @@ The macOS menu bar app shows your electricity data at a glance:
 - **AI assistant** — ask questions about your energy usage (off by default, requires Anthropic API key)
 - **Auto-recovery** — restarts the Python bridge after sleep or unexpected termination
 
-### Building the App
+### Build from Source
+
+You can build the app yourself instead of using the pre-built download. There are two options:
+
+**Option A: Standalone .app with bundled Python (recommended for distribution)**
+
+Produces a self-contained `.dmg` that works without Python installed. Requires Python 3.10+, Xcode, and ~5 minutes.
+
+```bash
+git clone https://github.com/Greatdane/open-octopus-japan.git
+cd open-octopus-japan
+bash scripts/build-release.sh 1.0.0
+# Output: build/OpenOctopusJapan-1.0.0-arm64.dmg
+```
+
+The script automatically:
+1. Creates a temporary venv and installs dependencies
+2. Bundles `octopus-server` into a standalone binary with PyInstaller
+3. Builds the Swift app with Xcode
+4. Packages everything into a `.dmg`
+
+**Option B: Development mode (for contributing or hacking)**
+
+Runs the app from Xcode while using a local Python install for the backend.
 
 ```bash
 # 1. Install the Python backend
 cd cli
+python3 -m venv ../venv
+source ../venv/bin/activate
 pip install -e ".[all]"
 
 # 2. Build the macOS app
@@ -51,7 +76,7 @@ open OctopusMenuBar.xcodeproj
 # Then Cmd+R in Xcode to build and run
 ```
 
-The app requires `octopus-server` (installed with the Python package) to communicate with the Octopus Energy API.
+In dev mode, the app finds `octopus-server` from your venv or PATH. The Python backend must be running for the app to work.
 
 ## CLI Commands
 
