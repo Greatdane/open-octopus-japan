@@ -15,7 +15,7 @@ Example:
     ...     print(f"Balance: ¥{account.balance:.0f}")
 """
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 from .client import (
     APIError,

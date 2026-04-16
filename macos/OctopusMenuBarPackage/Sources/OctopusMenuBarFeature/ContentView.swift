@@ -164,6 +164,7 @@ public class AppState: ObservableObject {
     @Published public var historyEntries: [HistoryEntry] = []
     @Published public var showHistory = true
     @Published public var showAI = false
+    @Published public var showSetup = false
     @AppStorage("menuBarDisplayMode") public var displayMode: MenuBarDisplayMode = .auto
     @AppStorage("usageDisplayMode") public var usageMode: UsageDisplayMode = .halfHourly
 
@@ -192,12 +193,78 @@ public class AppState: ObservableObject {
         }
     }
 
+    private static let envFilePath = NSHomeDirectory() + "/.octopus.env"
+
+    public var needsSetup: Bool {
+        !FileManager.default.fileExists(atPath: Self.envFilePath) || !envHasCredentials()
+    }
+
     public init() {
         Task { @MainActor in
-            self.setupBridge()
-            self.startAutoRefresh()
-            self.observeWakeFromSleep()
+            if needsSetup {
+                showSetup = true
+            } else {
+                self.setupBridge()
+                self.startAutoRefresh()
+                self.observeWakeFromSleep()
+            }
         }
+    }
+
+    public func completeSetup() {
+        showSetup = false
+        isLoading = true
+        setupBridge()
+        startAutoRefresh()
+        observeWakeFromSleep()
+    }
+
+    private func envHasCredentials() -> Bool {
+        guard let contents = try? String(contentsOfFile: Self.envFilePath, encoding: .utf8) else {
+            return false
+        }
+        let hasEmail = contents.contains("OCTOPUS_EMAIL=") &&
+            !contents.contains("OCTOPUS_EMAIL=your-")
+        let hasPassword = contents.contains("OCTOPUS_PASSWORD=") &&
+            !contents.contains("OCTOPUS_PASSWORD=your-")
+        return hasEmail && hasPassword
+    }
+
+    public static func saveEnvFile(email: String, password: String, anthropicKey: String) {
+        var lines = [
+            "OCTOPUS_EMAIL=\(email)",
+            "OCTOPUS_PASSWORD=\(password)",
+        ]
+        if !anthropicKey.isEmpty {
+            lines.append("ANTHROPIC_API_KEY=\(anthropicKey)")
+        }
+        let content = lines.joined(separator: "\n") + "\n"
+        try? content.write(toFile: envFilePath, atomically: true, encoding: .utf8)
+    }
+
+    public static func readEnvFile() -> (email: String, password: String, anthropicKey: String) {
+        guard let contents = try? String(contentsOfFile: envFilePath, encoding: .utf8) else {
+            return ("", "", "")
+        }
+        var email = ""
+        var password = ""
+        var anthropicKey = ""
+        for line in contents.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { continue }
+            let parts = trimmed.split(separator: "=", maxSplits: 1)
+            if parts.count == 2 {
+                let key = String(parts[0]).trimmingCharacters(in: .whitespaces)
+                let value = String(parts[1]).trimmingCharacters(in: .whitespaces)
+                switch key {
+                case "OCTOPUS_EMAIL": email = value
+                case "OCTOPUS_PASSWORD": password = value
+                case "ANTHROPIC_API_KEY": anthropicKey = value
+                default: break
+                }
+            }
+        }
+        return (email, password, anthropicKey)
     }
 
     private func setupBridge() {
@@ -502,6 +569,115 @@ struct CurvedSeparator: View {
     }
 }
 
+// MARK: - Setup View
+
+public struct SetupView: View {
+    @EnvironmentObject var state: AppState
+    @State private var email = ""
+    @State private var password = ""
+    @State private var anthropicKey = ""
+    @State private var showPassword = false
+    @State private var saving = false
+
+    public init() {}
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("🐙")
+                    .font(.system(size: 24))
+                Text("Open Octopus Japan")
+                    .font(.system(size: 16, weight: .semibold))
+            }
+            .padding(.bottom, 4)
+
+            Text("Enter your Octopus Energy Japan credentials to get started.")
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Email")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.secondary)
+                    TextField("your-email@example.com", text: $email)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12))
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Password")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.secondary)
+                    HStack {
+                        if showPassword {
+                            TextField("Password", text: $password)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(size: 12))
+                        } else {
+                            SecureField("Password", text: $password)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(size: 12))
+                        }
+                        Button(action: { showPassword.toggle() }) {
+                            Image(systemName: showPassword ? "eye.slash" : "eye")
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Anthropic API Key (optional)")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.secondary)
+                    TextField("sk-ant-...", text: $anthropicKey)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12))
+                    Text("For the AI assistant feature. Leave blank to skip.")
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button("Save & Connect") {
+                    saving = true
+                    AppState.saveEnvFile(email: email, password: password, anthropicKey: anthropicKey)
+                    state.completeSetup()
+                }
+                .disabled(email.isEmpty || password.isEmpty)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.regular)
+            }
+
+            HStack {
+                Text("Credentials are stored locally in ~/.octopus.env")
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary)
+                Spacer()
+                Button(action: { state.quit() }) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(16)
+        .frame(width: 320)
+        .background(Color(NSColor.windowBackgroundColor))
+        .onAppear {
+            let existing = AppState.readEnvFile()
+            email = existing.email
+            password = existing.password
+            anthropicKey = existing.anthropicKey
+        }
+    }
+}
+
 // MARK: - Menu Bar View
 
 public struct MenuBarView: View {
@@ -511,7 +687,10 @@ public struct MenuBarView: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if state.isLoading && state.data.rate == nil {
+            if state.showSetup {
+                SetupView()
+                    .environmentObject(state)
+            } else if state.isLoading && state.data.rate == nil {
                 loadingView
             } else if let error = state.lastError {
                 errorView(error)
@@ -1046,6 +1225,12 @@ public struct MenuBarView: View {
                             }
                         }
                     }
+                }
+
+                Divider()
+
+                Button("Account Settings...") {
+                    state.showSetup = true
                 }
 
                 Divider()
