@@ -54,10 +54,13 @@ pyinstaller \
   --exclude-module xmlrpc \
   --exclude-module lib2to3 \
   --exclude-module pydoc \
-  src/open_octopus/menubar_server.py
+  server_entry.py
 
 deactivate
 
+# Rename the binary from server_entry to octopus-server
+mv "$BUILD_DIR/pyinstaller-dist/octopus-server/server_entry" \
+   "$BUILD_DIR/pyinstaller-dist/octopus-server/octopus-server" 2>/dev/null || true
 echo "   PyInstaller output: $BUILD_DIR/pyinstaller-dist/octopus-server/"
 echo ""
 
