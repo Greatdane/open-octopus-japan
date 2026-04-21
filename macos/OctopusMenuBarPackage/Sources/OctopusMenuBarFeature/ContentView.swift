@@ -136,6 +136,7 @@ public enum UsageDisplayMode: String, CaseIterable, Identifiable {
 public enum MenuBarDisplayMode: String, CaseIterable, Identifiable {
     case auto = "Auto"           // Rate > Icon
     case rate = "Rate"           // Always show rate (or icon if unavailable)
+    case usage = "Usage"         // Today's kWh
     case iconOnly = "Icon Only"  // Just the ⚡ icon
     case octopus = "Octopus"     // 🐙 emoji
 
@@ -145,6 +146,7 @@ public enum MenuBarDisplayMode: String, CaseIterable, Identifiable {
         switch self {
         case .auto: return "Rate → Icon"
         case .rate: return "Current rate"
+        case .usage: return "Today's kWh"
         case .iconOnly: return "Minimal ⚡"
         case .octopus: return "🐙"
         }
@@ -168,7 +170,7 @@ public class AppState: ObservableObject {
     @AppStorage("menuBarDisplayMode") public var displayMode: MenuBarDisplayMode = .auto
     @AppStorage("usageDisplayMode") public var usageMode: UsageDisplayMode = .halfHourly
 
-    private var pythonBridge: PythonBridge?
+    var pythonBridge: PythonBridge?
     private var refreshTimer: Timer?
 
     public var menuBarTitle: String {
@@ -182,6 +184,12 @@ public class AppState: ObservableObject {
         case .rate:
             if let rate = data.rate {
                 return String(format: "¥%.0f", rate)
+            }
+            return "⚡"
+
+        case .usage:
+            if data.todayKwh > 0 {
+                return String(format: "%.1f kWh", data.todayKwh)
             }
             return "⚡"
 
@@ -644,14 +652,28 @@ public struct SetupView: View {
 
             HStack {
                 Spacer()
-                Button("Save & Connect") {
-                    saving = true
-                    AppState.saveEnvFile(email: email, password: password, anthropicKey: anthropicKey)
-                    state.completeSetup()
+                if state.needsSetup {
+                    Button("Save & Connect") {
+                        saving = true
+                        AppState.saveEnvFile(email: email, password: password, anthropicKey: anthropicKey)
+                        state.completeSetup()
+                    }
+                    .disabled(email.isEmpty || password.isEmpty)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
+                } else {
+                    Button("Save") {
+                        AppState.saveEnvFile(email: email, password: password, anthropicKey: anthropicKey)
+                        state.pythonBridge?.restart()
+                        state.showSetup = false
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                            state.refresh()
+                        }
+                    }
+                    .disabled(email.isEmpty || password.isEmpty)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
                 }
-                .disabled(email.isEmpty || password.isEmpty)
-                .buttonStyle(.borderedProminent)
-                .controlSize(.regular)
             }
 
             HStack {
@@ -659,11 +681,23 @@ public struct SetupView: View {
                     .font(.system(size: 9))
                     .foregroundColor(.secondary)
                 Spacer()
-                Button(action: { state.quit() }) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 10))
+                if state.needsSetup {
+                    Button(action: { state.quit() }) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 10))
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Button(action: { state.showSetup = false }) {
+                        HStack(spacing: 2) {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 9))
+                            Text("Back")
+                                .font(.system(size: 10))
+                        }
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
         }
         .padding(16)
